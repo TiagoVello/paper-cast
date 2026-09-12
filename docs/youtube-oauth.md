@@ -10,11 +10,14 @@ stdlib-only Python and needs nothing installed.
    Note the project id — it goes in the answer on the ticket.
 2. **Enable the YouTube Data API v3**:
    <https://console.cloud.google.com/apis/library/youtube.googleapis.com>.
-3. **Configure the OAuth consent screen**, user type **External**. Add the scope
-   `https://www.googleapis.com/auth/youtube.upload`, and add your own Google
-   account as a test user.
-4. **Publish the consent screen to production** — Audience → *Publish app* →
-   confirm. Do not skip this. A consent screen left in *Testing* issues refresh
+3. **Configure the consent screen** at
+   <https://console.cloud.google.com/auth/overview> (Google Auth Platform), user
+   type **External**. Declare the scope
+   `https://www.googleapis.com/auth/youtube.upload` under *Data Access*. No test
+   users are needed — step 4 publishes the app, which retires that list.
+4. **Publish the consent screen to production** — *Audience* → **Publish app** →
+   confirm. The dialog mentions verification for sensitive scopes; confirm
+   anyway. Do not skip this. A consent screen left in *Testing* issues refresh
    tokens that expire after **7 days**, so an unattended run would die weekly
    with `invalid_grant`. Publishing is one click and is **not** verification: no
    audit, no review. The app stays unverified (shows the "unverified app"
