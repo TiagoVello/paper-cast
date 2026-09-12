@@ -15,7 +15,25 @@ stdlib-only Python and needs nothing installed.
    type **External**. Declare the scope
    `https://www.googleapis.com/auth/youtube.upload` under *Data Access*. No test
    users are needed — step 4 publishes the app, which retires that list.
-4. **Publish the consent screen to production** — *Audience* → **Publish app** →
+4. **Fill in Branding** at <https://console.cloud.google.com/auth/branding>.
+   Production mode is refused without an app name, a user support email, a
+   homepage URL **and** a privacy policy URL — the console says so only when you
+   try to publish. Add the authorized domain *before* the URLs or it rejects
+   them:
+
+   | Field | Value |
+   |---|---|
+   | App name | `paper-cast` |
+   | User support email | your own address (dropdown) |
+   | Authorized domain | `github.com` |
+   | Application home page | `https://github.com/TiagoVello/paper-cast` |
+   | Privacy policy link | `https://github.com/TiagoVello/paper-cast/blob/main/PRIVACY.md` |
+   | Terms of service | leave empty, not required |
+
+   The policy is `PRIVACY.md` in this repo, so it has to be **pushed** before
+   Google can fetch it.
+
+5. **Publish the consent screen to production** — *Audience* → **Publish app** →
    confirm. The dialog mentions verification for sensitive scopes; confirm
    anyway. Do not skip this. A consent screen left in *Testing* issues refresh
    tokens that expire after **7 days**, so an unattended run would die weekly
@@ -24,7 +42,7 @@ stdlib-only Python and needs nothing installed.
    warning at consent, capped at 100 lifetime users), which is fine for one user
    — and unverified projects force every upload to `private`, which is what we
    want anyway.
-5. **Create an OAuth client** of type **Desktop app** under Credentials, download
+6. **Create an OAuth client** of type **Desktop app** under Credentials, download
    the JSON, and put it where the script looks:
 
    ```bash
@@ -46,7 +64,8 @@ a refresh token come back at all — and come back again on a re-authorisation.
 
 At the consent screen, click through the "Google hasn't verified this app"
 warning (Advanced → Go to …). That warning is the published-but-unverified
-state, and is expected. Leave the YouTube permission **ticked** — Google shows it
+state, and is expected — it is the price of not doing a compliance audit, and it
+is also why uploads are force-locked to private. Leave the YouTube permission **ticked** — Google shows it
 as a checkbox, and unticking it still returns a refresh token, just one that
 cannot upload. `authorize` refuses a grant without the upload scope rather than
 letting that surface as a 403 days later.
