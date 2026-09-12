@@ -1,0 +1,50 @@
+# paper-cast — copy to ~/.config/paper-cast/config.toml and edit.
+#
+# The file is optional: every key below has the default shown, so a fresh box
+# works with no config at all. It is also strict — an unknown key or an invalid
+# value is a hard error naming the key, because a silently-ignored
+# `format = "deep-dive"` costs a five-minute generation cycle to discover.
+#
+# Flat keys, no sections. `~` is expanded.
+#
+# Prerequisites live elsewhere, and are not repeated here so they cannot drift:
+#   - the YouTube credential: docs/youtube-oauth.md (and scripts/bootstrap_youtube.sh)
+#   - the NotebookLM session: `nlm login`, once, in a visible browser
+
+# BCP-47 code the overview is spoken in. NotebookLM decides what it supports;
+# "en" and "pt-BR" are both known good.
+language = "en"
+
+# What kind of overview NotebookLM generates:
+#   deep_dive  two hosts talking the paper through           (the default)
+#   brief      a short summary
+#   critique   a critical read
+#   debate     the two hosts disagreeing
+format = "deep_dive"
+
+# How long it runs for: short | default | long. NotebookLM treats this as a
+# steer, not a contract — a "default" deep dive on a 5-page paper ran ~12 min.
+length = "default"
+
+# An optional steer for what the hosts concentrate on, e.g.
+#   focus = "the training objective and the ablations"
+# Empty means no steer, and the flag is not passed at all.
+focus = ""
+
+# Where runs land: output_dir/<slug>/{cover.png, episode.m4a, episode.mp4}.
+# One directory per paper, silently overwritten when the same paper is re-run —
+# re-running a paper almost always means "that one came out wrong, do it again".
+output_dir = "~/Videos/paper-cast"
+
+# Whether to keep the intermediates once the episode is safely uploaded:
+#
+#   situation                        | behaviour
+#   ---------------------------------|--------------------------------------------
+#   false, upload succeeded          | delete cover.png + episode.m4a, keep the .mp4
+#   true,  upload succeeded          | keep all three
+#   any failure                      | delete nothing, print the run directory
+#   --dry-run                        | delete nothing — there was no upload
+#
+# In short: false means *tidy up after a clean run*, never *delete evidence*.
+# A half-finished run is exactly when the .m4a needs to still be there.
+keep_artifacts = false
