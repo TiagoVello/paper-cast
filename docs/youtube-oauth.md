@@ -122,3 +122,57 @@ loopback callback (state mismatch, a denied consent, and what it reflects back
 into the browser), token file permissions, the `videos.insert` body, and the
 resumable-upload offsets. Google itself is only exercised by the manual
 bootstrap above.
+
+## Wiring the wizard into `install.sh`
+
+`scripts/bootstrap_youtube.sh` was written to be run by hand. It is close to
+install-ready, but a later integration should know these before wrapping it.
+
+**Run it as a subprocess, never `source` it.** It sets `set -euo pipefail` and
+calls `exit 1` on its give-up paths (no project id, no client secret found,
+consent failed). Sourced, each of those kills the installer instead.
+
+**It needs a real TTY.** Every stage blocks on `read`. Piping an installer
+straight into a shell (`curl … | bash`) hands the script's own text to `read`
+and the wizard eats the rest of the installer. Either require an interactive
+run, or redirect explicitly: `bash scripts/bootstrap_youtube.sh < /dev/tty`.
+
+**It needs a desktop session on the same machine.** The consent flow opens a
+browser and catches the redirect on a loopback port, so the browser and the
+script must share a host. There is no headless or CI path — that is inherent to
+the credential, not a limitation of this script.
+
+**Exit status is only 0 or 1**, and `1` means "incomplete but resumable", not
+"broken". Answers live in `~/.config/paper-cast/bootstrap.env`, so a re-run
+picks up where it stopped. If the installer wants to branch on *why* it stopped,
+give the give-up paths distinct exit codes first.
+
+**Stage 9 is not idempotent.** It uploads a real video to the user's channel
+every run, against a 100/day `videos.insert` budget. An installer that may run
+repeatedly should offer to skip it, and use the cheap health check instead:
+
+```bash
+python3 scripts/youtube_auth.py refresh   # exit 0 == the credential still works
+```
+
+**Stage 4 offers `git push`.** It assumes a writable checkout with a remote,
+which a plugin installed read-only will not have. Make that stage skip cleanly
+when `git rev-parse` fails, there is no `origin`, or there is nothing to push.
+
+**Requirements**: `python3`, `ffmpeg`, `curl`, GNU `stat` (`-c`), `awk`, `sed`,
+`mktemp`. Optional: `git` (URL derivation and the push offer), `wl-copy`
+(clipboard; silently prints the value instead on X11 or over SSH), and
+`xdg-open`/`wslview`/`open` (the wizard warns and prints the URL if none exist).
+Check these up front rather than failing at stage 7.
+
+**It writes only to `~/.config/paper-cast/` and `$TMPDIR`** — never into the
+repo. `ENV_FILE` is assigned inside the script, so exporting it from an
+installer has no effect.
+
+**The stage library above the `STAGES` marker is generated** by the `/wizard`
+skill and is identical in every wizard; don't hand-edit it. If you add a stage,
+update `TOTAL_STAGES` to match or the progress counter lies.
+
+**The console URLs were verified on 2026-09-12.** Google reorganised this area
+once already (the OAuth consent screen became Google Auth Platform); if a stage
+opens a 404, the page moved and the step needs re-checking against the docs.
