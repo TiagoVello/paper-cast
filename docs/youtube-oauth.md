@@ -4,6 +4,17 @@ One-time setup for the credential paper-cast uploads with. Half of it is console
 work only a human can do; the other half is `scripts/youtube_auth.py`, which is
 stdlib-only Python and needs nothing installed.
 
+**Just run the wizard:**
+
+```bash
+scripts/bootstrap_youtube.sh
+```
+
+It walks all ten steps below — opening each console page, putting each value on
+your clipboard, running the consent flow, and proving a private upload — and it
+is resumable, so Ctrl-C and re-run costs nothing. The rest of this document is
+what it does, for when you would rather do it by hand or need to check its work.
+
 ## 1. Console (manual)
 
 1. **Create a GCP project** at <https://console.cloud.google.com/projectcreate>.
