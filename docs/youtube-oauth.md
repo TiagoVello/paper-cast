@@ -111,6 +111,34 @@ link. Delete the video in Studio afterwards.
 
 Neither file belongs in the repo. Both are per-machine.
 
+## From the pipeline
+
+`scripts/paper_cast.py` imports this file rather than shelling out to it — both live
+in `scripts/`, and a `~/.local/bin/paper-cast` symlink still resolves `sys.path[0]`
+to that directory, so a bare `import youtube_auth` works from the entry point.
+
+```python
+import youtube_auth
+
+youtube_auth.check_credential()        # pre-flight, before ~5 minutes of generation
+...
+video = youtube_auth.upload_private(mp4, title, description)
+```
+
+`check_credential()` exists because the expensive half of a run comes first: an
+expired or revoked token should cost two seconds, not a full NotebookLM cycle. It
+throws its access token away — the upload refreshes for itself.
+
+`upload_private()` is the pipeline's entire view of YouTube; it never handles a
+token. Titles go through `sanitize_title()` on the way in, which strips the `<`
+and `>` YouTube rejects and truncates at 100 characters — `pdfinfo` titles and
+filename stems are arbitrary, and that 400 would otherwise land *after* the
+episode was generated.
+
+An upload that fails is not retried. The `.mp4` survives in the run directory
+(artifacts are never deleted on failure), so the retry is the `upload` subcommand
+above, by hand, on the file that is already there.
+
 ## Tests
 
 ```bash

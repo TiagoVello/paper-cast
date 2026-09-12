@@ -286,6 +286,86 @@ class VideoMetadataTest(unittest.TestCase):
         json.dumps(ya.video_metadata(title="t", description="d"))
 
 
+class SanitizeMetadataTest(unittest.TestCase):
+    def test_leaves_an_ordinary_title_alone(self):
+        self.assertEqual(ya.sanitize_title("Attention Is All You Need"), "Attention Is All You Need")
+
+    def test_strips_the_angle_brackets_youtube_rejects(self):
+        self.assertEqual(ya.sanitize_title("Error rates <0.5% in <n> trials"), "Error rates 0.5% in n trials")
+
+    def test_truncates_to_youtubes_title_limit(self):
+        title = ya.sanitize_title("word " * 40)
+        self.assertEqual(len(title), ya.TITLE_LIMIT)
+        self.assertTrue(title.endswith("\u2026"))
+
+    def test_collapses_the_whitespace_pdfinfo_leaves_behind(self):
+        self.assertEqual(ya.sanitize_title("  A   paper\ntitle "), "A paper title")
+
+    def test_falls_back_when_nothing_survives(self):
+        self.assertEqual(ya.sanitize_title("   <>  "), ya.FALLBACK_TITLE)
+
+    def test_truncates_the_description_at_its_own_limit(self):
+        body = ya.sanitize_description("x" * 6000)
+        self.assertEqual(len(body), ya.DESCRIPTION_LIMIT)
+
+    def test_keeps_the_newlines_a_description_wants(self):
+        self.assertEqual(ya.sanitize_description("line\n\nline"), "line\n\nline")
+
+    def test_metadata_body_carries_the_sanitized_title(self):
+        body = ya.video_metadata(title="<b>" + "t" * 200, description="d")
+        self.assertLessEqual(len(body["snippet"]["title"]), ya.TITLE_LIMIT)
+        self.assertNotIn("<", body["snippet"]["title"])
+
+
+class PipelineSeamTest(unittest.TestCase):
+    """The two functions paper_cast.py imports; it never handles a token itself."""
+
+    def credential(self, tmp):
+        secret = Path(tmp) / "client_secret.json"
+        secret.write_text(json.dumps({"installed": {"client_id": "cid", "client_secret": "sec"}}))
+        token = Path(tmp) / "youtube_token.json"
+        token.write_text(json.dumps({"refresh_token": "rt", "scope": ya.SCOPE}))
+        return secret, token
+
+    def test_check_credential_passes_when_the_token_still_refreshes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret, token = self.credential(tmp)
+            with mock.patch.object(ya, "refresh_access_token", lambda *a: {"access_token": "at"}):
+                self.assertIsNone(ya.check_credential(secret, token))
+
+    def test_check_credential_raises_when_the_grant_carries_no_access_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret, token = self.credential(tmp)
+            with mock.patch.object(ya, "refresh_access_token", lambda *a: {"error": "invalid_grant"}):
+                with self.assertRaises(ya.ConsentError):
+                    ya.check_credential(secret, token)
+
+    def test_check_credential_raises_before_a_run_when_there_is_no_token_at_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret, _ = self.credential(tmp)
+            with self.assertRaises(ya.ConfigError):
+                ya.check_credential(secret, Path(tmp) / "absent.json")
+
+    def test_upload_private_refreshes_then_uploads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret, token = self.credential(tmp)
+            video = Path(tmp) / "episode.mp4"
+            video.write_bytes(b"not really an mp4")
+            seen = {}
+
+            def fake_upload(access_token, path, title, description):
+                seen.update(access_token=access_token, path=path, title=title)
+                return {"id": "vid", "status": {"privacyStatus": "private"}}
+
+            with mock.patch.object(ya, "refresh_access_token", lambda *a: {"access_token": "at"}):
+                with mock.patch.object(ya, "upload_video", fake_upload):
+                    result = ya.upload_private(video, "A paper", "Body", secret, token)
+
+            self.assertEqual(result["id"], "vid")
+            self.assertEqual(seen["access_token"], "at")
+            self.assertEqual(seen["path"], video)
+
+
 class ResumeOffsetTest(unittest.TestCase):
     def test_reads_the_next_byte_from_a_range_header(self):
         self.assertEqual(ya.parse_resume_offset("bytes=0-262143"), 262144)

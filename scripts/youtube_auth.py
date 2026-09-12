@@ -45,6 +45,12 @@ DEFAULT_TOKEN = CONFIG_DIR / "youtube_token.json"
 # The resumable protocol wants every chunk but the last to be a multiple of 256 KiB.
 CHUNK_SIZE = 8 * 1024 * 1024
 
+# YouTube's own limits on the videos.insert body. A title straight out of `pdfinfo`
+# can breach both, and the 400 would land after the episode had already been generated.
+TITLE_LIMIT = 100
+DESCRIPTION_LIMIT = 5000
+FALLBACK_TITLE = "Untitled paper"
+
 
 class ConfigError(Exception):
     """The client secret on disk is not the thing we need."""
@@ -280,10 +286,33 @@ def load_token(path: Path) -> dict[str, Any]:
 # --- upload -----------------------------------------------------------------
 
 
+def _truncate(text: str, limit: int) -> str:
+    """Cut to the limit, spending the last character on an ellipsis so it reads as cut."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "\u2026"
+
+
+def sanitize_title(title: str) -> str:
+    """Make an arbitrary paper title something videos.insert will accept.
+
+    YouTube rejects `<` and `>` outright and caps the title at 100 characters. The
+    input here is `pdfinfo` metadata or a filename stem, so neither is hypothetical.
+    """
+    cleaned = " ".join(title.replace("<", "").replace(">", "").split())
+    return _truncate(cleaned, TITLE_LIMIT) if cleaned else FALLBACK_TITLE
+
+
+def sanitize_description(description: str) -> str:
+    """Same rules as the title, at the description's own 5000-character ceiling."""
+    cleaned = description.replace("<", "").replace(">", "")
+    return _truncate(cleaned, DESCRIPTION_LIMIT)
+
+
 def video_metadata(title: str, description: str) -> dict[str, Any]:
     """The videos.insert body. Private forever, and honest about being machine-made."""
     return {
-        "snippet": {"title": title, "description": description},
+        "snippet": {"title": sanitize_title(title), "description": sanitize_description(description)},
         "status": {
             # Unverified projects force uploads private anyway; we ask for what we want.
             "privacyStatus": "private",
@@ -361,6 +390,40 @@ def upload_file(session_url: str, path: Path, size: int, mime_type: str) -> dict
     raise UploadError("sent the whole file but the session never returned a video")
 
 
+def refreshed_grant(
+    client_secret_path: Path = DEFAULT_CLIENT_SECRET, token_path: Path = DEFAULT_TOKEN
+) -> dict[str, Any]:
+    """The whole stored-credential dance, in one place: secret, token, refresh."""
+    client_id, client_secret = read_client_secret(client_secret_path)
+    token = load_token(token_path)
+    grant = refresh_access_token(client_id, client_secret, token["refresh_token"])
+    if not grant.get("access_token"):
+        raise ConsentError(f"token endpoint returned no access token: {grant}")
+    return grant
+
+
+def check_credential(
+    client_secret_path: Path = DEFAULT_CLIENT_SECRET, token_path: Path = DEFAULT_TOKEN
+) -> None:
+    """Pre-flight for the pipeline: fail in two seconds rather than after a five-minute
+    generation run. The access token is deliberately thrown away — it lasts an hour and
+    the upload refreshes for itself, which is simpler than reasoning about the expiry."""
+    refreshed_grant(client_secret_path, token_path)
+
+
+def upload_private(
+    path: Path,
+    title: str,
+    description: str,
+    client_secret_path: Path = DEFAULT_CLIENT_SECRET,
+    token_path: Path = DEFAULT_TOKEN,
+) -> dict[str, Any]:
+    """Upload a finished episode with the stored credential. The pipeline's whole
+    view of YouTube: it never handles a token itself."""
+    grant = refreshed_grant(client_secret_path, token_path)
+    return upload_video(grant["access_token"], path, title, description)
+
+
 def upload_video(access_token: str, path: Path, title: str, description: str) -> dict[str, Any]:
     size = path.stat().st_size
     mime_type = mimetypes.guess_type(path.name)[0] or "video/*"
@@ -424,21 +487,16 @@ def cmd_authorize(args: argparse.Namespace) -> int:
 
 
 def cmd_refresh(args: argparse.Namespace) -> int:
-    client_id, client_secret = read_client_secret(args.client_secret)
-    token = load_token(args.token)
-    grant = refresh_access_token(client_id, client_secret, token["refresh_token"])
+    grant = refreshed_grant(args.client_secret, args.token)
     print(f"Access token acquired, valid {grant.get('expires_in', '?')}s.")
     print(f"Scope: {grant.get('scope', '?')}")
     return 0
 
 
 def cmd_upload(args: argparse.Namespace) -> int:
-    client_id, client_secret = read_client_secret(args.client_secret)
-    token = load_token(args.token)
-    grant = refresh_access_token(client_id, client_secret, token["refresh_token"])
-    if not grant.get("access_token"):
-        raise ConsentError(f"token endpoint returned no access token: {grant}")
-    video = upload_video(grant["access_token"], args.file, args.title, args.description)
+    video = upload_private(
+        args.file, args.title, args.description, args.client_secret, args.token
+    )
     video_id = video.get("id", "?")
     print(f"Uploaded {video_id} as {video.get('status', {}).get('privacyStatus', '?')}.")
     print(f"https://studio.youtube.com/video/{video_id}/edit")
