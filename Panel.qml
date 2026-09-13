@@ -242,6 +242,7 @@ Item {
     var trimmed = String(ref).trim()
     if (trimmed === "" || resolveProc.running) return
     root.arxivError = ""
+    resolveProc.pendingRef = trimmed
     resolveProc.command = root.shellCommand(["paper-cast", "resolve", trimmed, "--json"])
     resolveProc.running = true
   }
@@ -250,7 +251,14 @@ Item {
 
   Process {
     id: resolveProc
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.handleResolved(text) }
+    // What the user typed, carried through to `queue add`: a fetched Source has
+    // no file on disk until the runner downloads it, so the reference is the
+    // only thing that names it (#17).
+    property string pendingRef: ""
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.handleResolved(text, resolveProc.pendingRef)
+    }
     stderr: StdioCollector { waitForEnd: true; onStreamFinished: root.resolveStderr = text.trim() }
     onExited: function(code) {
       if (code === 0) {
@@ -262,13 +270,17 @@ Item {
     }
   }
 
-  function handleResolved(raw) {
+  function handleResolved(raw, ref) {
     var parsed
     try { parsed = JSON.parse(raw) } catch (e) { return }
     if (!parsed || !parsed.kind) return
     root.staged = root.staged.concat([{
       kind: parsed.kind,
       path: parsed.path || "",
+      // `queue add` resolves a reference itself (#17), and re-resolving there is
+      // what validates it a second time against a paper withdrawn between
+      // staging and queuing. A local PDF has no reference and needs none.
+      ref: ref || "",
       title: parsed.title || parsed.id || ""
     }])
   }
@@ -282,13 +294,15 @@ Item {
     var argv = ["paper-cast", "queue", "add"]
     for (var i = 0; i < root.staged.length; i++) {
       var source = root.staged[i]
-      if (!source.path) {
-        // #17's arXiv resolution may leave `path` unset until the runner
-        // downloads it; `queue add` only knows papers already on disk today.
-        root.queueError = "“" + (source.title || "a Source") + "” has no file on disk yet"
+      // A fetched Source is named by what the user typed; `queue add` resolves
+      // it again and downloads it into the Run directory (#17). Only a Source
+      // that is neither on disk nor named by a reference is unqueueable.
+      var named = source.path || source.ref
+      if (!named) {
+        root.queueError = "“" + (source.title || "a Source") + "” is not a paper we can fetch"
         return
       }
-      argv.push(source.path)
+      argv.push(named)
     }
     var combining = root.combine && root.staged.length > 1
     if (combining) {

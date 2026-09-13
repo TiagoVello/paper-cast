@@ -223,8 +223,25 @@ def pdfinfo_title(output: str) -> str:
     return ""
 
 
-def resolve_title(override: str | None, pdfinfo_output: str, pdf: Path, extra: int = 0) -> str:
-    """--title, then the PDF's own metadata, then the filename it arrived as.
+def run_directory(title: str, primary: Path, config: dict[str, Any]) -> Path:
+    """Where one Job's artifacts land: the output directory, and the Episode's slug.
+
+    A function rather than an expression inside `run_pipeline`, because #17 has to
+    put a downloaded Source in this directory *before* the pipeline that names it
+    has started, and two places computing a directory name two ways is how a paper
+    ends up somewhere that is not next to its Episode.
+    """
+    return config["output_dir"] / run_slug(title, primary)
+
+
+def resolve_title(
+    override: str | None,
+    pdfinfo_output: str,
+    pdf: Path,
+    extra: int = 0,
+    source_title: str = "",
+) -> str:
+    """--title, then where it came from, then the PDF's metadata, then the filename.
 
     `extra` is how many further Sources sit behind this one in a combined Job
     (#18): when the panel's title is empty the runner falls back to the first
@@ -234,13 +251,19 @@ def resolve_title(override: str | None, pdfinfo_output: str, pdf: Path, extra: i
     *fallback*: an `override` is returned exactly as given, since it may already
     be the panel's own "+N more" text.
 
-    Empty when none of the three say anything, which leaves the uploader's own
+    `source_title` is what the Source was called where it came from: arXiv's title
+    for an arXiv Source (#17). It outranks `pdfinfo`, which is the whole point of
+    it — the PDF of *Attention Is All You Need* carries no Title at all (#2), and
+    that is true of most of arXiv. It is a fallback and not an override, so a
+    combined Job decorates it with "+N more" like any other.
+
+    Empty when none of them say anything, which leaves the uploader's own
     `Untitled paper` fallback (#6) to fire instead of pre-empting it here.
     """
     stripped_override = " ".join((override or "").split())
     if stripped_override:
         return stripped_override
-    for candidate in (pdfinfo_title(pdfinfo_output), pdf.stem):
+    for candidate in (source_title, pdfinfo_title(pdfinfo_output), pdf.stem):
         title = " ".join((candidate or "").split())
         if title:
             return f"{title} + {extra} more" if extra else title
@@ -529,6 +552,7 @@ def run_pipeline(
     *,
     note: Any = None,
     resume_from: str | None = None,
+    source_title: str = "",
 ) -> int:
     """Paper(s) in, episode up. Optionally reporting where it is, and skipping what is done.
 
@@ -541,6 +565,10 @@ def run_pipeline(
     it has reached, the run directory, the title, the episode's URL. The Queue
     passes one that writes them into the Job file (#13); a bare `paper-cast cast`
     passes none, and nothing is recorded anywhere but the terminal.
+
+    `source_title` is what the first Source was called where it came from — arXiv's
+    title, for an arXiv Source (#17). The Queue passes it; a bare `paper-cast cast`
+    has a file and nothing else to go on, and passes none.
 
     `resume_from` is a stage to pick up at, for a retry that must not repeat work
     that succeeded: an upload that failed re-uploads the `.mp4` on disk without
@@ -578,9 +606,13 @@ def run_pipeline(
     # It is asked of the first Source only — #18's fallback names *that* paper and
     # says how many more sit behind it, rather than guessing at a title for all of
     # them.
-    metadata = "" if title_override else run_step("pdfinfo", ["pdfinfo", str(primary)])
-    title = resolve_title(title_override, metadata, primary, extra=len(pdfs) - 1)
-    run = RunPaths(config["output_dir"] / run_slug(title, primary))
+    # A Source that named itself outranks `pdfinfo` too (#17), so asking it then
+    # costs a subprocess whose answer cannot be used either.
+    metadata = "" if title_override or source_title else run_step("pdfinfo", ["pdfinfo", str(primary)])
+    title = resolve_title(
+        title_override, metadata, primary, extra=len(pdfs) - 1, source_title=source_title
+    )
+    run = RunPaths(run_directory(title, primary, config))
     run.dir.mkdir(parents=True, exist_ok=True)
     say(f"{title}\n  {run.dir}")
     note({"stage": resume_from, "title": title, "run_dir": str(run.dir)})

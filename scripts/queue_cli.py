@@ -17,9 +17,13 @@ The shape, whole — the panel reads these fields and no others:
     stage           one of paper_cast.STAGES: queued, generating, muxing,
                     uploading, done, failed. The three middle ones mean a runner
                     is working on it now.
-    sources         the Sources, in order: [{"kind", "path", "title"}]. `kind` is
-                    "pdf" today; #17 adds "arxiv" and may leave `path` null until
-                    the runner has downloaded it. `title` may be "".
+    sources         the Sources, in order, each one exactly as `paper-cast
+                    resolve` prints it (#17): [{"kind", "id", "title", "url",
+                    "path"}]. `kind` is "pdf" for a paper on disk, "arxiv" for an
+                    arXiv entry and "url" for a PDF on the web; the last two carry
+                    `path` null until the runner has downloaded the paper into the
+                    Run directory. `id` and `url` are null for a local paper, and
+                    `title` is "" until something has named it.
     combine         true when these Sources make one Episode together (#18).
     title           the Episode's title, or "" to take it from the paper. The
                     pipeline writes back what it resolved, so a retry reuses it.
@@ -62,9 +66,11 @@ from typing import Any, Iterator
 
 import paper_cast as pc
 from paper_cast import ConfigError, PipelineError
+# What a Source may be named as, and how a named one becomes a file on disk — the
+# arXiv API included — is all in `sources` (#17).
+from sources import episode_directory, materialise, resolve
 
 JOB_VERSION = 1
-SOURCE_PDF = "pdf"
 TIMESTAMP = "%Y-%m-%dT%H:%M:%SZ"
 ID_STAMP = "%Y%m%dT%H%M%S"
 
@@ -311,7 +317,7 @@ def has_content(path: Path) -> bool:
     return path.is_file() and path.stat().st_size > 0
 
 
-def source_paths(sources: list[dict[str, Any]]) -> list[Path]:
+def source_paths(sources: list[dict[str, Any]], run_dir: Path | None) -> list[Path]:
     """Every Source of a Job, as a local PDF path, in Job order.
 
     One failure here fails the whole Job before any of them reach NotebookLM
@@ -319,15 +325,19 @@ def source_paths(sources: list[dict[str, Any]]) -> list[Path]:
     it was asked to, so this is resolved once, up front, rather than lazily as
     the pipeline gets to each one.
 
-    `kind` is always "pdf" today, and its `path` is already a file on disk. #17
-    adds "arxiv", whose Source has to be downloaded before it is a Path — this
-    loop is the one, clearly-marked place that happens, so its
-    `materialise(source, run_dir)` call belongs on the line below.
+    A Source of kind "pdf" is already a file on disk; an "arxiv" or "url" one has
+    to be downloaded before it is a Path (#17), and this loop is the one place
+    that happens. `run_dir` is where a download lands — `sources.episode_directory`
+    names it, and it is None for a Job that has nothing to fetch.
     """
     paths = []
     for source in sources:
-        # --- #17 lands its one-line `materialise(source, run_dir)` call here ---
-        if source.get("kind") != SOURCE_PDF or not source.get("path"):
+        # --- #17's one line: whatever this Source is, afterwards it is a file. ---
+        materialise(source, run_dir)
+        # `kind` is no longer the question: `materialise` has either put a paper
+        # on disk or said why it could not, so a Source with no path here is a
+        # local one whose file has gone.
+        if not source.get("path"):
             raise PipelineError(f"this Job's Source is not a paper on disk: {source!r}")
         paths.append(Path(source["path"]))
     return paths
@@ -338,12 +348,15 @@ def cast_job(job: dict[str, Any], note: Any, resume_from: str) -> None:
     sources = job.get("sources") or []
     if not sources:
         raise PipelineError("this Job has no Sources")
-    pdfs = source_paths(sources)
 
     # The Job's own Steering wins over the config's: it was snapshotted when the
     # Job was queued, and a preset flipped through since must not re-steer a Job
     # that is already waiting in line.
     config = pc.load_config(pc.CONFIG_FILE) | {"focus": job["steering"]}
+    # The config is read first because #17 needs `output_dir` to know where a
+    # Source that is not on disk yet should be downloaded to: the Run directory
+    # this Episode is about to claim, so the paper sits next to what it produced.
+    pdfs = source_paths(sources, episode_directory(job, config))
     pc.run_pipeline(
         pdfs,
         job["title"] or None,
@@ -351,6 +364,10 @@ def cast_job(job: dict[str, Any], note: Any, resume_from: str) -> None:
         dry_run=False,
         note=note,
         resume_from=resume_from,
+        # #17: arXiv named the paper and `pdfinfo` cannot — the PDF of *Attention
+        # Is All You Need* carries no Title at all (#2) — so the first Source's
+        # own title is handed over to outrank it.
+        source_title=sources[0].get("title") or "",
     )
 
 
@@ -433,18 +450,6 @@ def read_stdin() -> str:
     return text[:-1] if text.endswith("\n") else text
 
 
-def pdf_source(raw: str) -> dict[str, str]:
-    """A Source named on the command line, checked now rather than in fifteen minutes.
-
-    The path is stored absolute: a Job outlives the working directory it was
-    queued from, and the runner has no idea what that was.
-    """
-    path = Path(raw).expanduser()
-    if not path.is_file():
-        raise ConfigError(f"no such paper: {raw}")
-    return {"kind": SOURCE_PDF, "path": str(path.resolve()), "title": ""}
-
-
 def steering_for(args: argparse.Namespace) -> tuple[str, str]:
     """The Steering this Job is queued with, and the preset it came from.
 
@@ -470,7 +475,10 @@ def add_command(args: argparse.Namespace) -> int:
     """
     if args.steering is not None and args.steering_stdin:
         raise ConfigError("queue add takes --steering, or --steering-stdin, and not both")
-    sources = [pdf_source(raw) for raw in args.sources]
+    # Every reference is read, and an arXiv one looked up, before a single Job is
+    # written: a path that is not there and an id that names nothing both fail
+    # here, while the user is still looking at what they typed (#17).
+    sources = [resolve(raw) for raw in args.sources]
     steering, preset = steering_for(args)
     groups = [sources] if args.combine else [[source] for source in sources]
     if args.title and len(groups) > 1:
@@ -570,7 +578,12 @@ def register(subparsers: Any) -> None:
     parser.set_defaults(handler=usage)
 
     adder = actions.add_parser("add", help="queue one or more Sources")
-    adder.add_argument("sources", nargs="+", metavar="<source>", help="the papers to cast")
+    adder.add_argument(
+        "sources",
+        nargs="+",
+        metavar="<source>",
+        help="the papers to cast: PDFs, arXiv ids or URLs, or direct links to a .pdf",
+    )
     adder.add_argument(
         "--combine",
         action="store_true",
