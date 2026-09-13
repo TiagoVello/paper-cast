@@ -171,13 +171,15 @@ class JobShapeTest(QueueTestCase):
         job = self.queued()
         self.assertEqual(job["log"], str(q.jobs_dir() / f"{job['id']}.log"))
 
-    def test_a_source_is_a_kind_a_path_and_a_title(self):
-        # #17 adds a kind of its own to this, and must not have to reshape it.
+    def test_a_source_says_what_it_is_and_where_it_came_from(self):
+        # #17 added `id` and `url` to this: an arXiv Source has no path until the
+        # runner has downloaded it, so it has to carry what it *is* in the meantime.
+        # One shape for every kind, and the shape `paper-cast resolve` prints.
         paper = self.paper()
         self.add(str(paper))
         self.assertEqual(
             q.all_jobs()[0]["sources"],
-            [{"kind": "pdf", "path": str(paper.resolve()), "title": ""}],
+            [{"kind": "pdf", "id": None, "title": "", "url": None, "path": str(paper.resolve())}],
         )
 
     def test_the_timestamps_are_iso_8601_utc(self):
