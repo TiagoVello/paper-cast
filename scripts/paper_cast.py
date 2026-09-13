@@ -3,6 +3,10 @@
 
     paper-cast paper.pdf [--title "..."] [--dry-run]
 
+Subcommands live in sibling `*_cli.py` modules and are discovered at startup;
+the bare form above is `paper-cast cast`, spelled the way it was before there
+were any others.
+
 PDF in, NotebookLM audio overview out, muxed over page 1 of the paper and
 uploaded private. The foreign programs — `nlm`, `pdfinfo`, `pdftoppm`, `ffmpeg`
 — are shelled out to; the uploader is our own Python and is imported.
@@ -470,6 +474,27 @@ def run_pipeline(pdf: Path, title_override: str | None, config: dict[str, Any], 
 
 # --- entry point ------------------------------------------------------------
 
+# Subcommands live in sibling `*_cli.py` modules, each exposing
+# `register(subparsers)`: it adds its own parser and sets `handler`, a callable
+# taking the parsed namespace and returning an exit code. Discovery is by glob
+# rather than a list here, so growing the CLI is a new file and never an edit to
+# this one.
+SUBCOMMAND_SUFFIX = "_cli.py"
+
+
+def subcommand_modules() -> list[Any]:
+    """Import every sibling `*_cli.py`, in a stable order."""
+    import importlib
+
+    modules = []
+    for path in sorted(Path(__file__).resolve().parent.glob("*" + SUBCOMMAND_SUFFIX)):
+        modules.append(importlib.import_module(path.name[: -len(".py")]))
+    return modules
+
+
+def cast_command(args: argparse.Namespace) -> int:
+    return run_pipeline(args.pdf, args.title, load_config(), args.dry_run)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -477,17 +502,43 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("pdf", type=Path, help="the paper to turn into an episode")
-    parser.add_argument("--title", help="override the title from the PDF's metadata")
-    parser.add_argument("--dry-run", action="store_true", help="stop after the .mp4, before the upload")
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
+
+    cast = subparsers.add_parser("cast", help="turn a paper into an episode, now")
+    cast.add_argument("pdf", type=Path, help="the paper to turn into an episode")
+    cast.add_argument("--title", help="override the title from the PDF's metadata")
+    cast.add_argument("--dry-run", action="store_true", help="stop after the .mp4, before the upload")
+    cast.set_defaults(handler=cast_command)
+
+    for module in subcommand_modules():
+        module.register(subparsers)
+    # What `with_default_command` needs, recorded where it is known rather than
+    # dug back out of argparse's internals.
+    parser.commands = set(subparsers.choices)
     return parser
 
 
+def with_default_command(argv: list[str], commands: set[str]) -> list[str]:
+    """`paper-cast paper.pdf` still means `paper-cast cast paper.pdf`.
+
+    The bare form is the one that was documented before there were subcommands,
+    and it is the one worth typing; anything that is not a known command and not
+    a flag is a paper.
+    """
+    if argv and not argv[0].startswith("-") and argv[0] not in commands:
+        return ["cast", *argv]
+    return argv
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    argv = with_default_command(list(sys.argv[1:] if argv is None else argv), parser.commands)
+    args = parser.parse_args(argv)
+    if not getattr(args, "handler", None):
+        parser.print_help()
+        return 2
     try:
-        config = load_config()
-        return run_pipeline(args.pdf, args.title, config, args.dry_run)
+        return args.handler(args)
     except RUN_ERRORS as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
