@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.tiagovello.paper-cast",
+  "name": "paper-cast",
+  "version": "0.1.0",
+  "author": "Tiago Vello Marques",
+  "license": "MIT",
+  "homepage": "https://github.com/TiagoVello/paper-cast",
+  "description": "Drag papers onto the bar, get a private YouTube episode.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "paper-cast",
+    "description": "Queue papers as NotebookLM episodes, steered by you",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
