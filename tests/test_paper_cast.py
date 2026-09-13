@@ -28,6 +28,7 @@ class ParseConfigTest(unittest.TestCase):
         self.assertEqual(config["presets"], [])
         self.assertIs(config["keep_artifacts"], False)
         self.assertIs(config["keep_video"], False)
+        self.assertIs(config["keep_notebooks"], False)
 
     def test_a_key_in_the_file_wins_over_its_default(self):
         config = pc.parse_config('language = "pt-BR"\nformat = "brief"\n')
@@ -60,7 +61,7 @@ class ParseConfigTest(unittest.TestCase):
         self.assertIn("length", str(caught.exception))
 
     def test_a_key_of_the_wrong_type_is_rejected(self):
-        for key in ("keep_artifacts", "keep_video"):
+        for key in ("keep_artifacts", "keep_video", "keep_notebooks"):
             with self.subTest(key=key), self.assertRaises(pc.ConfigError) as caught:
                 pc.parse_config(f'{key} = "yes"')
             self.assertIn(key, str(caught.exception))

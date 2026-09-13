@@ -758,6 +758,29 @@ class CombinedJobTest(QueueTestCase):
         adds = [command for label, command in self.commands if label == "nlm source add"]
         self.assertEqual(len(adds), 2)
 
+    def test_the_notebook_is_deleted_once_the_episode_is_safely_up(self):
+        self.run_combined()
+        deletes = [command for label, command in self.commands if label == "nlm notebook delete"]
+        self.assertEqual(deletes, [["nlm", "notebook", "delete", "nb-1", "--confirm"]])
+
+    def test_keep_notebooks_leaves_it_on_notebooklm(self):
+        kept = pc.parse_config("") | {"output_dir": self.root / "Videos", "keep_notebooks": True}
+        with mock.patch.object(pc, "load_config", lambda *a: kept):
+            self.run_combined()
+        labels = [label for label, _ in self.commands]
+        self.assertNotIn("nlm notebook delete", labels)
+
+    def test_a_failed_job_never_deletes_the_notebook(self):
+        # Nothing here is "safely up" (#13): the notebook stays, same as the .mp4
+        # and the run directory, so a retry — or a human — still has something to
+        # look at.
+        job = self.queued(sources=3, combine=True, title="Three Papers")
+        failing = job["sources"][1]["path"]
+        with mock.patch.object(pc, "run_step", self.stub_run_step(fail_on=failing)):
+            q.run_job(job)
+        labels = [label for label, _ in self.commands]
+        self.assertNotIn("nlm notebook delete", labels)
+
 
 class ListAndShowTest(QueueTestCase):
     """The JSON the panel reads when it is not reading the files itself."""

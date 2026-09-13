@@ -48,6 +48,7 @@ DEFAULTS: dict[str, Any] = {
     "output_dir": "~/Videos/paper-cast",
     "keep_artifacts": False,
     "keep_video": False,
+    "keep_notebooks": False,
 }
 REQUIRED_TOOLS = ("nlm", "pdfinfo", "pdftoppm", "ffmpeg")
 
@@ -168,6 +169,7 @@ def parse_config(text: str) -> dict[str, Any]:
         _check_type(key, config[key], str)
     _check_type("keep_artifacts", config["keep_artifacts"], bool)
     _check_type("keep_video", config["keep_video"], bool)
+    _check_type("keep_notebooks", config["keep_notebooks"], bool)
     _check_choice("format", _check_type("format", config["format"], str), FORMATS)
     _check_choice("length", _check_type("length", config["length"], str), LENGTHS)
     if not config["language"]:
@@ -521,7 +523,7 @@ def download_audio(notebook_id: str, artifact_id: str, destination: Path) -> Non
         raise PipelineError(f"nlm download audio wrote nothing to {destination}")
 
 
-def generate_episode(pdfs: list[Path], title: str, config: dict[str, Any], run: RunPaths) -> None:
+def generate_episode(pdfs: list[Path], title: str, config: dict[str, Any], run: RunPaths) -> str:
     """Everything NotebookLM: notebook, sources, overview, download.
 
     Every Source lands in the one notebook before the overview is asked for
@@ -530,6 +532,11 @@ def generate_episode(pdfs: list[Path], title: str, config: dict[str, Any], run: 
     A Source that will not add raises here and none after it are tried, which
     is what keeps a combined Job's failure the whole Job's (#13): nothing has
     been muxed or uploaded yet.
+
+    Returns the notebook id, so `tidy_up` can delete it once the episode is
+    safely up (`keep_notebooks`). A retry that resumes past this stage never
+    calls it, and so has no id to give tidy_up — the notebook a first attempt
+    made is not this run's to delete.
     """
     notebook = json_step("nlm notebook create", ["nlm", "notebook", "create", title, "--json"])
     notebook_id = notebook.get("notebook_id")
@@ -550,15 +557,23 @@ def generate_episode(pdfs: list[Path], title: str, config: dict[str, Any], run: 
     wait_for_audio(notebook_id, artifact_id)
     say("Downloading the episode")
     download_audio(notebook_id, artifact_id, run.audio)
+    return notebook_id
 
 
-def tidy_up(run: RunPaths, config: dict[str, Any]) -> None:
-    """Shed what the config does not want kept, once the episode is safely up."""
+def tidy_up(run: RunPaths, config: dict[str, Any], notebook_id: str | None) -> None:
+    """Shed what the config does not want kept, once the episode is safely up.
+
+    `notebook_id` is None for a retry that resumed past generation (#13): there
+    is no notebook this run made, so there is nothing here to delete either.
+    """
     for leftover in cleanup_targets(run, config, uploaded=True):
         leftover.unlink(missing_ok=True)
     if not any(run.dir.iterdir()):
         # Nothing was kept, so leave no empty directory per paper behind either.
         run.dir.rmdir()
+    if notebook_id and not config["keep_notebooks"]:
+        say(f"Deleting notebook {notebook_id}")
+        run_step("nlm notebook delete", ["nlm", "notebook", "delete", notebook_id, "--confirm"])
 
 
 def run_pipeline(
@@ -642,13 +657,17 @@ def run_pipeline(
     say(f"{title}\n  {run.dir}")
     note({"stage": resume_from, "title": title, "run_dir": str(run.dir)})
 
+    # None unless this run is the one that creates the notebook (below): a retry
+    # resuming past generation has no id to hand `tidy_up`, and nothing of this
+    # run's to delete.
+    notebook_id = None
     try:
         if resume_from == STAGE_GENERATING:
             # #18: the cover is page 1 of the first Source, not a grid — real ffmpeg
             # work for a static image nobody looks at twice.
             say("Rendering the cover from page 1")
             run_step("pdftoppm", cover_command(primary, run.cover_prefix))
-            generate_episode(pdfs, title, config, run)
+            notebook_id = generate_episode(pdfs, title, config, run)
 
         if resume_from in (STAGE_GENERATING, STAGE_MUXING):
             note({"stage": STAGE_MUXING})
@@ -672,7 +691,7 @@ def run_pipeline(
     url = f"https://studio.youtube.com/video/{video_id}/edit"
     say(url)
     note({"video_url": url})
-    tidy_up(run, config)
+    tidy_up(run, config, notebook_id)
     return 0
 
 

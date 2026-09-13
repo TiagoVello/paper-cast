@@ -59,14 +59,20 @@ output_dir = "~/Videos/paper-cast"
 #
 #   keep_artifacts   cover.png and episode.m4a — what the mux was made from
 #   keep_video       episode.mp4 — the file that was uploaded
+#   keep_notebooks   the NotebookLM notebook the overview was generated in
 #
 #   situation                     | behaviour
 #   ------------------------------|------------------------------------------------
-#   both false, upload succeeded  | delete all three, and the empty run directory
+#   all false, upload succeeded   | delete cover.png, episode.m4a and episode.mp4,
+#                                  | the empty run directory, and the notebook
 #   keep_video = true             | the .mp4 stays
 #   keep_artifacts = true         | cover.png and episode.m4a stay
+#   keep_notebooks = true         | the notebook stays on notebooklm.google.com
 #   any failure                   | delete nothing, print the run directory
-#   --dry-run                     | delete nothing — there was no upload
+#   --dry-run                     | delete nothing — there was no upload, and no
+#                                  | notebook deletion either: generation ran, so
+#                                  | the notebook exists, but the episode may still
+#                                  | need it before there is a .mp4 to judge
 #
 # In short: false means *tidy up after a clean run*, never *delete evidence*. A
 # half-finished run is exactly when the .m4a needs to still be there, and a run
@@ -75,8 +81,15 @@ output_dir = "~/Videos/paper-cast"
 # keep_video defaults off because the upload already happened — YouTube has the
 # episode, and the local copy is a second one at ~45 MB per 20 minutes. Turn it
 # on if you want to keep the file too.
+#
+# keep_notebooks defaults off too: NotebookLM's free tier caps both how many
+# notebooks exist at once and how many overviews it will generate in a day, and a
+# notebook this program made has nothing left to do once its overview is
+# downloaded. Turn it on to keep the notebook around — to ask it something more
+# on notebooklm.google.com, say.
 keep_artifacts = false
 keep_video = false
+keep_notebooks = false
 
 # Steering presets: named, pre-written Steerings, flipped through on the panel's
 # carousel rather than retyped. None by default — Setup writes a starter set (ML
