@@ -277,6 +277,33 @@ class ResolveTitleTest(unittest.TestCase):
             "Spaced Out",
         )
 
+    def test_a_combined_jobs_empty_title_falls_back_to_the_first_papers_metadata(self):
+        # #18: the panel's field was empty, so the runner falls back the way a
+        # single-paper Job always has — but says how many more are behind it.
+        self.assertEqual(
+            pc.resolve_title(None, PDFINFO_WITH_TITLE, Path("/tmp/paper.pdf"), extra=2),
+            "Attention Is All You Need + 2 more",
+        )
+
+    def test_the_fallback_count_also_applies_to_the_filename_stem(self):
+        self.assertEqual(
+            pc.resolve_title(None, PDFINFO_WITHOUT_TITLE, Path("/tmp/1706.03762v7.pdf"), extra=1),
+            "1706.03762v7 + 1 more",
+        )
+
+    def test_an_override_is_never_decorated_with_the_extra_count(self):
+        # A non-empty title may already be the panel's own "+N more" text (#15);
+        # decorating it again here would double it up.
+        self.assertEqual(
+            pc.resolve_title("Mine", PDFINFO_WITH_TITLE, Path("/tmp/paper.pdf"), extra=2), "Mine"
+        )
+
+    def test_a_single_source_job_is_not_decorated_since_extra_defaults_to_zero(self):
+        self.assertEqual(
+            pc.resolve_title(None, PDFINFO_WITH_TITLE, Path("/tmp/paper.pdf")),
+            "Attention Is All You Need",
+        )
+
 
 class CoverCommandTest(unittest.TestCase):
     def command(self):
@@ -403,10 +430,10 @@ class ArtifactStatusTest(unittest.TestCase):
 class EpisodeDescriptionTest(unittest.TestCase):
     """#6 bounded the description mechanically and deferred its content to this ticket."""
 
-    def describe(self, **overrides):
+    def describe(self, pdfs=None, **overrides):
         return pc.episode_description(
             "Attention Is All You Need",
-            Path("/papers/1706.03762v7.pdf"),
+            pdfs if pdfs is not None else [Path("/papers/1706.03762v7.pdf")],
             pc.parse_config("") | overrides,
         )
 
@@ -417,6 +444,7 @@ class EpisodeDescriptionTest(unittest.TestCase):
         description = self.describe()
         self.assertIn("1706.03762v7.pdf", description)
         self.assertNotIn("/papers/", description)
+        self.assertIn("Source: 1706.03762v7.pdf", description)
 
     def test_records_the_settings_the_overview_was_generated_with(self):
         description = self.describe(format="debate", length="long", language="pt-BR")
@@ -435,6 +463,26 @@ class EpisodeDescriptionTest(unittest.TestCase):
     def test_holds_nothing_youtube_would_reject(self):
         description = self.describe()
         self.assertEqual(ya.sanitize_description(description), description)
+
+    def test_a_combined_episode_lists_every_source(self):
+        # #18: three Sources in one Job means one Episode discussing all three,
+        # and the description is where a viewer can tell what those three were.
+        description = self.describe(pdfs=[
+            Path("/papers/attention.pdf"),
+            Path("/papers/bert.pdf"),
+            Path("/papers/gpt.pdf"),
+        ])
+        self.assertIn("Sources:", description)
+        self.assertNotIn("Source:", description)
+        for name in ("attention.pdf", "bert.pdf", "gpt.pdf"):
+            self.assertIn(name, description)
+
+    def test_a_combined_episode_says_papers_are_the_source_of_truth_plural(self):
+        description = self.describe(pdfs=[Path("/papers/a.pdf"), Path("/papers/b.pdf")])
+        self.assertIn("papers are the source", description)
+
+    def test_a_single_source_still_reads_as_one_paper(self):
+        self.assertIn("paper is the source", self.describe())
 
     def test_the_title_also_survives_youtube_as_it_stands(self):
         self.assertEqual(ya.sanitize_title("Attention Is All You Need"), "Attention Is All You Need")
