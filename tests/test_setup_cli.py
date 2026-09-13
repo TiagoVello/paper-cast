@@ -134,6 +134,16 @@ class PrerequisiteTest(unittest.TestCase):
             status, _ = quietly(sc.step_prerequisites, sc.Prompt(assume_yes=True))
         self.assertEqual(status, sc.SATISFIED)
 
+    def test_a_just_installed_nlm_is_findable_for_the_rest_of_the_run(self):
+        # uv puts it in ~/.local/bin, which this process's PATH may not hold, and
+        # step 2 would otherwise report the nlm step 1 just installed as missing.
+        with mock.patch.dict(os.environ, {"PATH": "/usr/bin"}):
+            sc.ensure_bin_on_path()
+            self.assertTrue(sc.on_path(sc.BIN_DIR))
+            was = os.environ["PATH"]
+            sc.ensure_bin_on_path()
+            self.assertEqual(os.environ["PATH"], was, "added twice")
+
     def test_declining_pacman_leaves_the_step_outstanding(self):
         prompt = sc.Prompt(assume_yes=False, interactive=True, gum=None)
         with mock.patch.object(sc.shutil, "which", which_map(("nlm",))), mock.patch.object(
