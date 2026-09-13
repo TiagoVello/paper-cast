@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "local.papercast-proto",
+  "name": "paper-cast (prototype)",
+  "version": "0.0.1",
+  "author": "prototype",
+  "license": "MIT",
+  "description": "THROWAWAY prototype: three variants of the paper-cast dropdown panel. No pipeline behind it.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "Panel.qml" },
+  "barWidget": {
+    "displayName": "paper-cast (prototype)",
+    "description": "Variant switcher for the paper-cast panel design",
+    "category": "Debug",
+    "defaultSection": "right",
+    "allowMultiple": false,
+    "defaults": {},
+    "schema": []
+  }
+}

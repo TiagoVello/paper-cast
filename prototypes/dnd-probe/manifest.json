@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "local.dndtest",
+  "name": "DnD Probe",
+  "version": "1.0.0",
+  "author": "dnd-test",
+  "license": "MIT",
+  "description": "Empirical probe: does dragging a file from Nautilus onto this bar icon fire DropArea events?",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "DnD Probe",
+    "description": "Logs onEntered/onDropped to a file and fires notify-send",
+    "category": "Debug",
+    "defaultSection": "right",
+    "allowMultiple": false,
+    "defaults": {},
+    "schema": []
+  }
+}
