@@ -40,8 +40,13 @@ length = "default"
 focus = ""
 
 # Which preset `focus` was loaded from, so the bar panel and the CLI agree on
-# which one is current. Empty means none of them is. A name that matches no
-# preset is an error, rather than a panel quietly showing the wrong one.
+# which one is current. Empty means none of them is — a hand-written Steering
+# belonging to no preset. A name that matches no preset is an error, rather than
+# a panel quietly showing the wrong one.
+#
+#   paper-cast config set steering_preset "Critical read"
+#
+# loads that preset, which is to say it copies the preset's text into `focus`.
 steering_preset = ""
 
 # Where runs land: output_dir/<slug>/{cover.png, episode.m4a, episode.mp4}.
