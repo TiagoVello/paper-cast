@@ -305,6 +305,19 @@ class ConfigCommandTest(unittest.TestCase):
         self.assertEqual(self.run_config("set", "focus", "--stdin", stdin=steering + "\n")[0], 0)
         self.assertEqual(self.run_config("get", "focus")[1], steering + "\n")
 
+    def test_a_steering_read_under_an_ascii_locale_is_stored_as_what_it_says(self):
+        # A runner spawned from a session that set no locale runs under `LC_ALL=C`:
+        # Python reads its stdin as ASCII and hides every other byte in a
+        # surrogate. The config file is UTF-8 either way, so the surrogates have
+        # to be put back before it is written — or a Steering that mentions
+        # Schrödinger fails on the write, with a traceback and no config.
+        steering = "Talk about Schrödinger — précis."
+        hidden = steering.encode().decode("ascii", "surrogateescape")
+        self.assertNotEqual(hidden, steering)
+        self.assertEqual(self.run_config("set", "focus", "--stdin", stdin=hidden)[0], 0)
+        self.assertEqual(pc.load_config(self.path)["focus"], steering)
+        self.assertIn(steering, self.path.read_text(encoding="utf-8"))
+
     def test_set_presets_round_trips_the_text_byte_for_byte(self):
         text = 'Read it like a reviewer.\n\tWhere is the evidence thin?\nAnd the """ awkward bits \\ too.'
         as_json = json.dumps([{"name": "Critical read", "text": text}])

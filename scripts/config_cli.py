@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from paper_cast import CONFIG_FILE, DEFAULTS, ConfigError, load_config, parse_config
+from paper_cast import CONFIG_FILE, DEFAULTS, ConfigError, load_config, parse_config, utf8
 
 CONFIG_HEADER = """\
 # paper-cast. Written by `paper-cast config set`, which writes TOML and not your
@@ -134,7 +134,10 @@ def save_config(config: dict[str, Any], path: Path = CONFIG_FILE) -> None:
     # Written beside the file and renamed over it: a Job may be reading the config
     # at the moment the panel writes one, and a rename is atomic.
     temporary = path.with_name(path.name + ".new")
-    temporary.write_text(text)
+    # Named, not the locale's: a Steering is prose and `load_config` reads it back
+    # as UTF-8, so a preset with a dash or an accent in it must not depend on the
+    # locale of whatever shell the panel or the runner was started from.
+    temporary.write_text(text, encoding="utf-8")
     temporary.replace(path)
 
 
@@ -271,7 +274,9 @@ def read_stdin() -> str:
     `echo` ends with a newline and nobody means it as part of their Steering;
     `printf` is there for whoever does.
     """
-    text = sys.stdin.read()
+    # Read as the UTF-8 it was sent as, not as whatever encoding the session
+    # that spawned this had: `paper_cast.utf8` says what that costs otherwise.
+    text = utf8(sys.stdin.read())
     return text[:-1] if text.endswith("\n") else text
 
 

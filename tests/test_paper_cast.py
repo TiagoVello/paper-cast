@@ -9,6 +9,7 @@ to inline `nlm` cannot invalidate them.
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -172,6 +173,28 @@ class SteeringPresetTest(unittest.TestCase):
         long_text = "word " * 500
         config = pc.parse_config(f'[[presets]]\nname = "Long"\ntext = "{long_text}"')
         self.assertEqual(config["presets"][0]["text"], long_text)
+
+
+class Utf8Test(unittest.TestCase):
+    """Prose that arrived through a session with no locale set, put back together."""
+
+    HIDDEN = "Schrödinger — précis.".encode().decode("ascii", "surrogateescape")
+
+    def ascii_locale(self):
+        return mock.patch.object(pc.sys, "getfilesystemencoding", lambda: "ascii")
+
+    def test_bytes_hidden_in_surrogates_are_read_as_the_utf_8_they_are(self):
+        self.assertNotEqual(self.HIDDEN, "Schrödinger — précis.")
+        with self.ascii_locale():
+            self.assertEqual(pc.utf8(self.HIDDEN), "Schrödinger — précis.")
+
+    def test_text_hiding_nothing_is_returned_as_it_stands(self):
+        # Including the case the locale could not have produced — a stdin the
+        # environment named UTF-8 under an ASCII filesystem encoding — which must
+        # be handed back rather than raising on the way through.
+        with self.ascii_locale():
+            self.assertEqual(pc.utf8("Schrödinger"), "Schrödinger")
+        self.assertEqual(pc.utf8("plain ASCII"), "plain ASCII")
 
 
 class SlugTest(unittest.TestCase):

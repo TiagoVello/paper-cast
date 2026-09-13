@@ -188,13 +188,30 @@ def parse_config(text: str) -> dict[str, Any]:
 def load_config(path: Path = CONFIG_FILE) -> dict[str, Any]:
     """Read the config file if it is there; a missing one is the default set."""
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return parse_config("")
     try:
         return parse_config(text)
     except ConfigError as err:
         raise ConfigError(f"{path}: {err}") from None
+
+
+def utf8(text: str) -> str:
+    """Text as the UTF-8 it was sent as, whatever encoding it arrived through.
+
+    A runner spawned from a session that set no locale runs under `LC_ALL=C`, and
+    Python then reads stdin as ASCII and hides every other byte in a surrogate.
+    Left there, a Steering mentioning *Schrödinger* fails the Job on the write of
+    a file this program only ever writes as UTF-8. Prose only: a *path* with the
+    same surrogates in it is how the filesystem is addressed under that locale,
+    and repairing one would be how it stops opening.
+    """
+    try:
+        return text.encode(sys.getfilesystemencoding(), "surrogateescape").decode("utf-8", "replace")
+    except UnicodeEncodeError:
+        # Nothing hidden to put back: the text already says what it says.
+        return text
 
 
 # --- naming -----------------------------------------------------------------
@@ -740,4 +757,12 @@ if __name__ == "__main__":
     # would load a second copy of it, and the ConfigError a subcommand raised would
     # be a different class from the one main() catches — a traceback, not a message.
     sys.modules.setdefault("paper_cast", sys.modules[__name__])
+    # Every file this program writes is UTF-8 and everything it prints is prose or
+    # JSON, so its streams say so too. The locale of the session that started it
+    # may not — a runner spawned from one that set none runs under `LC_ALL=C` —
+    # and printing a title with an accent in it would be a traceback rather than a
+    # title. Here rather than in main(), which is called with the streams a caller
+    # already chose (the tests redirect them).
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8")
     raise SystemExit(main())

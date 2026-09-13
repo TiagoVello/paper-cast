@@ -141,7 +141,10 @@ def write_job(job: dict[str, Any]) -> dict[str, Any]:
     path = job_file(job["id"])
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".new")
-    temporary.write_text(json.dumps(job, ensure_ascii=False, indent=2) + "\n")
+    # `encoding=`, not the locale's: the JSON above keeps non-ASCII as itself, and
+    # a runner started from a session with no locale set writes (and reads) ASCII,
+    # so a paper called *Schrödinger* would fail the Job on its own title.
+    temporary.write_text(json.dumps(job, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
     return job
 
@@ -149,7 +152,7 @@ def write_job(job: dict[str, Any]) -> dict[str, Any]:
 def read_job(job_id: str) -> dict[str, Any]:
     path = job_file(job_id)
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise ConfigError(f"no such Job: {job_id}") from None
     except json.JSONDecodeError as err:
@@ -166,7 +169,7 @@ def all_jobs() -> list[dict[str, Any]]:
     jobs = []
     for path in sorted(jobs_dir().glob("*.json")):
         try:
-            jobs.append(json.loads(path.read_text()))
+            jobs.append(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             continue
     return jobs
@@ -452,7 +455,9 @@ def drain() -> int:
 
 def read_stdin() -> str:
     """A value byte for byte, minus the one trailing newline a shell adds."""
-    text = sys.stdin.read()
+    # Read as the UTF-8 it was sent as, not as whatever encoding the session
+    # that spawned this had: `pc.utf8` says what that costs otherwise.
+    text = pc.utf8(sys.stdin.read())
     return text[:-1] if text.endswith("\n") else text
 
 
