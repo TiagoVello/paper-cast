@@ -214,7 +214,7 @@ def uv_tool_install_command() -> list[str]:
 
 
 def step_prerequisites(prompt: Prompt) -> str:
-    packages = missing_packages()
+    packages = missing_packages(shutil.which)
     nlm_missing = shutil.which("nlm") is None
     if not packages and not nlm_missing:
         note("ffmpeg, poppler, uv and nlm are all on PATH.")
@@ -271,7 +271,7 @@ def step_notebooklm(prompt: Prompt) -> str:
     if shutil.which("nlm") is None:
         warn("nlm is not installed, so there is no session to log in to. Step 1 first.")
         return OUTSTANDING
-    if notebooklm_ready():
+    if notebooklm_ready(run_quiet):
         note("The NotebookLM session is live.")
         return SATISFIED
 
@@ -285,7 +285,7 @@ def step_notebooklm(prompt: Prompt) -> str:
     if not prompt.confirm("Log in to NotebookLM in a browser now?"):
         warn("skipped: the NotebookLM session. Run `nlm login` before the first Job.")
         return OUTSTANDING
-    if run_visible(["nlm", "login"]) != 0 or not notebooklm_ready():
+    if run_visible(["nlm", "login"]) != 0 or not notebooklm_ready(run_quiet):
         raise SetupError("`nlm login` did not leave a working session; try it again by hand")
     return DONE
 
