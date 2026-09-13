@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -76,6 +77,23 @@ MAX_FEED_BYTES = 1024 * 1024
 # stops, rather than filling the disk under ~/Videos.
 MAX_PDF_BYTES = 256 * 1024 * 1024
 CHUNK = 64 * 1024
+
+# arXiv's own limits, one per surface this module touches. The legacy API's
+# terms of use ask for "no more than one request every three seconds, and limit
+# requests to a single connection at a time" (info.arxiv.org/help/api/tou.html);
+# the main site's robots.txt sets a Crawl-delay of fifteen for everything it
+# serves, /pdf included. A burst of resolves from `queue add`, or of downloads
+# as the runner works through a Queue, is exactly the shape that trips either
+# one — and arXiv says outright that it will block a machine it thinks is
+# circumventing the limit, not just answer it 429 forever.
+THROTTLE_INTERVALS = {
+    "export.arxiv.org": 3.0,
+    "arxiv.org": 15.0,
+}
+
+# One clock per host, not one for the module: the API and the PDF host are two
+# different limits, and a request to one should never wait on the other's pace.
+_last_request_at: dict[str, float] = {}
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 
@@ -258,6 +276,29 @@ def _request(url: str) -> urllib.request.Request:
     return urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
 
 
+def _throttle(url: str) -> None:
+    """Wait out whatever is left of this host's interval before another request.
+
+    Every request this module makes to export.arxiv.org or arxiv.org goes
+    through here first — it is `fetch_feed` and `download`'s only difference
+    from any other HTTP client. A host with no entry in THROTTLE_INTERVALS (a
+    direct PDF link on someone else's site) is never delayed: those limits are
+    arXiv's, not ours to impose on a host that never asked for them.
+    """
+    host = urllib.parse.urlsplit(url).hostname or ""
+    interval = THROTTLE_INTERVALS.get(host)
+    if interval is None:
+        return
+    now = time.monotonic()
+    last = _last_request_at.get(host)
+    if last is not None:
+        wait = interval - (now - last)
+        if wait > 0:
+            time.sleep(wait)
+            now = time.monotonic()
+    _last_request_at[host] = now
+
+
 def fetch_feed(arxiv_id: str) -> bytes:
     """One `id_list` query to the arXiv API. Network trouble comes back as a message.
 
@@ -265,6 +306,7 @@ def fetch_feed(arxiv_id: str) -> bytes:
     box you pasted into is wrong", so every way urllib has of failing is named.
     """
     url = f"{ARXIV_API}?{urllib.parse.urlencode({'id_list': arxiv_id, 'max_results': 1})}"
+    _throttle(url)
     try:
         with _open(_request(url), API_TIMEOUT) as response:
             return response.read(MAX_FEED_BYTES)
@@ -472,6 +514,7 @@ def download(url: str, destination: Path) -> Path:
     would mistake for a paper it already has.
     """
     partial = destination.with_name(destination.name + ".part")
+    _throttle(url)
     try:
         with _open(_request(url), DOWNLOAD_TIMEOUT) as response, partial.open("wb") as handle:
             first = response.read(CHUNK)

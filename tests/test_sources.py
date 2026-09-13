@@ -90,6 +90,12 @@ class SourcesTestCase(unittest.TestCase):
         said = mock.patch.object(pc, "say", lambda message: None)
         said.start()
         self.addCleanup(said.stop)
+        # `_throttle` runs for real in every test — ThrottleTest below is the one
+        # that cares what it waits for — but nothing here should cost wall-clock
+        # time, so only the actual blocking is muted.
+        slept = mock.patch.object(sources.time, "sleep", lambda seconds: None)
+        slept.start()
+        self.addCleanup(slept.stop)
 
     def answers(self, opener):
         patch = mock.patch.object(sources, "_open", opener)
@@ -339,6 +345,77 @@ class ResolveTest(SourcesTestCase):
         self.answers(answering(b"<feed>" + b"x" * (sources.MAX_FEED_BYTES * 2)))
         with self.assertRaises(sources.SourceError):
             sources.resolve("1706.03762")
+
+
+class ThrottleTest(SourcesTestCase):
+    """One clock per arXiv host, and a request to a stranger's host is never slowed.
+
+    `time.sleep` is muted for every test by the base class; here it is watched
+    instead, alongside a `time.monotonic` fed one reading per call, so a wait is
+    asserted down to the second without the test actually taking one.
+    """
+
+    def setUp(self):
+        super().setUp()
+        sources._last_request_at.clear()
+        self.addCleanup(sources._last_request_at.clear)
+
+    def clock(self, *readings):
+        return mock.patch.object(sources.time, "monotonic", side_effect=readings)
+
+    def test_the_first_request_to_a_throttled_host_never_waits(self):
+        with self.clock(100.0), mock.patch.object(sources.time, "sleep") as sleep:
+            sources._throttle("https://export.arxiv.org/api/query?id_list=1706.03762")
+        sleep.assert_not_called()
+
+    def test_a_second_request_inside_the_interval_waits_out_the_remainder(self):
+        with self.clock(100.0, 101.0, 103.0), mock.patch.object(sources.time, "sleep") as sleep:
+            sources._throttle("https://export.arxiv.org/api/query?id_list=1")
+            sources._throttle("https://export.arxiv.org/api/query?id_list=2")
+        sleep.assert_called_once_with(2.0)
+
+    def test_a_request_once_the_interval_has_passed_never_waits(self):
+        with self.clock(100.0, 104.0), mock.patch.object(sources.time, "sleep") as sleep:
+            sources._throttle("https://export.arxiv.org/api/query?id_list=1")
+            sources._throttle("https://export.arxiv.org/api/query?id_list=2")
+        sleep.assert_not_called()
+
+    def test_the_pdf_host_gets_its_own_longer_interval(self):
+        with self.clock(100.0, 105.0, 115.0), mock.patch.object(sources.time, "sleep") as sleep:
+            sources._throttle("https://arxiv.org/pdf/1706.03762v7")
+            sources._throttle("https://arxiv.org/pdf/1706.03762v7")
+        sleep.assert_called_once_with(10.0)
+
+    def test_the_api_and_the_pdf_host_are_throttled_independently(self):
+        # Fetching the feed and then the PDF for the same paper, moments apart,
+        # must not make the second wait on the first's three-second budget.
+        with self.clock(100.0, 101.0), mock.patch.object(sources.time, "sleep") as sleep:
+            sources._throttle("https://export.arxiv.org/api/query?id_list=1")
+            sources._throttle("https://arxiv.org/pdf/1706.03762v7")
+        sleep.assert_not_called()
+
+    def test_a_host_arxiv_does_not_serve_is_never_throttled(self):
+        # A direct PDF link on someone else's site costs this module nothing:
+        # the limits above are arXiv's own, not ours to impose elsewhere.
+        with mock.patch.object(sources.time, "sleep") as sleep, \
+             mock.patch.object(sources.time, "monotonic") as monotonic:
+            sources._throttle("https://example.com/papers/attention.pdf")
+        sleep.assert_not_called()
+        monotonic.assert_not_called()
+
+    def test_fetch_feed_throttles_before_it_opens_the_request(self):
+        with mock.patch.object(sources, "_throttle") as throttle:
+            self.answers(answering(feed("attention")))
+            sources.resolve("1706.03762")
+        throttle.assert_called_once()
+        self.assertTrue(throttle.call_args.args[0].startswith(sources.ARXIV_API))
+
+    def test_download_throttles_before_it_opens_the_request(self):
+        source = sources.arxiv_source("1706.03762v7")
+        with mock.patch.object(sources, "_throttle") as throttle:
+            self.answers(answering(PDF_BYTES))
+            sources.download(sources.pdf_url(source), self.root / "out.pdf")
+        throttle.assert_called_once_with("https://arxiv.org/pdf/1706.03762v7")
 
 
 class RunDirectoryTest(SourcesTestCase):
