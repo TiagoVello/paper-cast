@@ -638,15 +638,16 @@ class RunJobTest(QueueTestCase):
         q.run_job(job)
         self.assertEqual(q.read_job(job["id"])["stage"], pc.STAGE_FAILED)
 
-    def test_a_combined_job_fails_whole_and_says_it_is_not_built_yet(self):
-        # A Job's failure is the Job's, whole (#13): a two-Source Job never ships
-        # an Episode discussing one of them. Running one is #18.
-        job = self.queued(sources=3, combine=True)
+    def test_a_job_with_one_source_naming_no_paper_fails_naming_it(self):
+        # source_paths (#18) is what still catches this; a single-Source Job
+        # exercises the same guard a combined one does.
+        job = self.queued()
+        job["sources"] = [{"kind": "arxiv", "path": None, "title": ""}]
+        q.write_job(job)
         q.run_job(job)
         failed = q.read_job(job["id"])
         self.assertEqual(failed["stage"], pc.STAGE_FAILED)
-        self.assertIn("#18", failed["error"])
-        self.assertIsNone(failed["video_url"])
+        self.assertIn("arxiv", failed["error"])
 
     def test_the_jobs_steering_is_the_one_that_reaches_the_hosts(self):
         pc.CONFIG_FILE.write_text('focus = "Changed since."\n')
@@ -655,6 +656,105 @@ class RunJobTest(QueueTestCase):
         with mock.patch.object(pc, "run_pipeline", lambda *args, **kw: seen.update(args[2])):
             q.run_job(job)
         self.assertEqual(seen["focus"], "As queued.")
+
+
+class CombinedJobTest(QueueTestCase):
+    """#18: several Sources, one Episode — run for real, with only the foreign
+    programs and the upload stubbed. Nothing here mocks `cast_job` itself, so it
+    is `source_paths` and the pipeline's own multi-Source handling under test."""
+
+    def setUp(self):
+        super().setUp()
+        self.commands = []
+        self.uploaded = []
+
+        def upload(video, title, description):
+            self.uploaded.append((video, title, description))
+            return {"id": "vid123"}
+
+        for target, attribute, value in (
+            (pc, "missing_tools", lambda: []),
+            (ya, "check_credential", lambda: None),
+            (ya, "upload_private", upload),
+            (pc, "load_config", lambda *a: pc.parse_config("") | {"output_dir": self.root / "Videos"}),
+        ):
+            patch = mock.patch.object(target, attribute, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def stub_run_step(self, fail_on=None):
+        """A `run_step` that answers every label the pipeline asks of it.
+
+        `fail_on` is a Source's path: the "nlm source add" call for it raises,
+        the way a real `nlm` would when NotebookLM refuses one paper mid-list.
+        """
+        def run_step(label, command):
+            self.commands.append((label, command))
+            if label == "nlm notebook create":
+                return json.dumps({"notebook_id": "nb-1"})
+            if label == "nlm source add" and command[-2] == fail_on:
+                raise pc.PipelineError(f"nlm source add failed: {fail_on}")
+            if label == "nlm audio create":
+                return json.dumps({"artifact_id": "art-1"})
+            if label == "nlm studio status":
+                return json.dumps([{"artifact_id": "art-1", "status": "completed"}])
+            if label == "nlm download audio":
+                Path(command[command.index("--output") + 1]).write_bytes(b"an episode")
+            return ""
+        return run_step
+
+    def run_combined(self, fail_on=None, n=3, title="Three Papers"):
+        job = self.queued(sources=n, combine=True, title=title)
+        with mock.patch.object(pc, "run_step", self.stub_run_step(fail_on)):
+            q.run_job(job)
+        return q.read_job(job["id"]), job
+
+    def test_every_source_is_added_before_the_overview_is_asked_for(self):
+        _, job = self.run_combined()
+        labels = [label for label, _ in self.commands]
+        adds = [command for label, command in self.commands if label == "nlm source add"]
+        self.assertEqual([command[command.index("--file") + 1] for command in adds],
+                          [source["path"] for source in job["sources"]])
+        self.assertLess(labels.index("nlm source add"), labels.index("nlm audio create"))
+        # All three, not just the first or the last.
+        self.assertEqual(len([c for c in self.commands if c[0] == "nlm source add"]), 3)
+
+    def test_the_cover_comes_from_the_first_source_only(self):
+        _, job = self.run_combined()
+        cover_command = next(command for label, command in self.commands if label == "pdftoppm")
+        self.assertEqual(cover_command[-2], job["sources"][0]["path"])
+
+    def test_the_description_lists_every_source(self):
+        self.run_combined()
+        _, _, description = self.uploaded[0]
+        self.assertIn("Sources:", description)
+
+    def test_the_title_is_whatever_the_job_said(self):
+        finished, _ = self.run_combined(title="Three Papers")
+        _, title, _ = self.uploaded[0]
+        self.assertEqual(title, "Three Papers")
+        self.assertEqual(finished["title"], "Three Papers")
+
+    def test_the_episode_ends_done_with_one_video(self):
+        finished, _ = self.run_combined()
+        self.assertEqual(finished["stage"], pc.STAGE_DONE)
+        self.assertEqual(len(self.uploaded), 1)
+
+    def test_a_mid_list_source_failing_fails_the_whole_job_without_uploading(self):
+        # A Job's failure is the Job's, whole (#13): a two-paper Episode never
+        # ships when three were asked for.
+        job = self.queued(sources=3, combine=True, title="Three Papers")
+        failing = job["sources"][1]["path"]
+        with mock.patch.object(pc, "run_step", self.stub_run_step(fail_on=failing)):
+            q.run_job(job)
+        failed = q.read_job(job["id"])
+        self.assertEqual(failed["stage"], pc.STAGE_FAILED)
+        self.assertIsNone(failed["video_url"])
+        self.assertIn(failing, failed["error"])
+        self.assertEqual(self.uploaded, [])
+        # The third Source was never tried once the second one failed.
+        adds = [command for label, command in self.commands if label == "nlm source add"]
+        self.assertEqual(len(adds), 2)
 
 
 class ListAndShowTest(QueueTestCase):
