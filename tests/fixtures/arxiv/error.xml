@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Not captured: hand-built to the error shape arXiv's API manual documents,
+     because a malformed id never reaches the API from paper-cast — the reference
+     table refuses one first — and the machine this was written on could not get a
+     real one out of arxiv.org without hammering it. Everything else in this
+     directory is a real response, byte for byte. -->
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>ArXiv Query: search_query=&amp;id_list=not-an-id&amp;start=0&amp;max_results=1</title>
+  <opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">1</opensearch:totalResults>
+  <entry>
+    <id>http://arxiv.org/api/errors#incorrect_id_format_for_not-an-id</id>
+    <title>Error</title>
+    <summary>incorrect id format for not-an-id</summary>
+  </entry>
+</feed>
