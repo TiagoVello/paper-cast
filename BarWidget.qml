@@ -13,17 +13,43 @@ import qs.Ui
 // has failed, and faded when paper-cast is not set up yet. The only motion
 // allowed is a slow breath while work is running.
 //
-// `Panel` is the root because it already is the open()/close()/opened contract
-// that `omarchy-shell shell toggle io.github.tiagovello.paper-cast` reaches
-// through Bar.findPanelWidget(). The contract therefore holds before #15's
-// dropdown exists, and does not break if it is ever taken away.
-Panel {
+// `BarWidget` is the root — the same base every first-party widget-with-a-
+// dropdown uses (see plugins/panels/weather/BarWidget.qml,
+// plugins/panels/clock/BarWidget.qml): a plain Item that lays out inline in
+// the bar's row. `qs.Ui/Panel` (tried first) is *not* a layer-shell surface
+// either — it is Item-based too, its `PanelController` a bare QtObject — but
+// it carries an unused IpcHandler/switchPanel surface meant for a widget that
+// *is* the popout, which this one is not (#15's Panel.qml is). Owning a
+// PanelController directly here, the same way `qs.Ui/Panel` does internally,
+// keeps the open()/close()/opened contract `Bar.findPanelWidget()` requires
+// for `omarchy-shell shell toggle io.github.tiagovello.paper-cast` without
+// inheriting machinery this widget never uses.
+BarWidget {
   id: root
 
-  // No `ipcTarget`. One bar surface exists per monitor, so every instance of
-  // this widget would race to register the same IPC handler; the bar-widget
-  // route above already carries summon/hide/toggle and picks the instance on
-  // the focused output for us.
+  // No `ipcTarget`: BarWidget carries none, and none is wanted. One bar
+  // surface exists per monitor, so every instance of this widget would race
+  // to register the same IPC handler; the bar-widget route above already
+  // carries summon/hide/toggle and picks the instance on the focused output
+  // for us.
+
+  readonly property bool opened: panelController.open
+  property bool popoutSwitchClosing: false
+
+  function open() { panelController.show() }
+  function close() { panelController.hide() }
+  function toggle() { panelController.toggle() }
+  // Mirrors qs.Ui/Panel's own implementation: Bar.requestPopout prefers this
+  // over close() when handing the popout to a different panel, so the
+  // dropdown's KeyboardPanel (which reads popoutSwitchClosing off `owner`)
+  // can skip its normal fade during the handoff.
+  function closeForPopoutSwitch() {
+    popoutSwitchClosing = true
+    close()
+    Qt.callLater(function() { popoutSwitchClosing = false })
+  }
+
+  PanelController { id: panelController }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
