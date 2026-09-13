@@ -356,7 +356,8 @@ def cast_job(job: dict[str, Any], note: Any, resume_from: str) -> None:
     # The config is read first because #17 needs `output_dir` to know where a
     # Source that is not on disk yet should be downloaded to: the Run directory
     # this Episode is about to claim, so the paper sits next to what it produced.
-    pdfs = source_paths(sources, episode_directory(job, config))
+    run_dir = episode_directory(job, config)
+    pdfs = source_paths(sources, run_dir)
     pc.run_pipeline(
         pdfs,
         job["title"] or None,
@@ -364,6 +365,11 @@ def cast_job(job: dict[str, Any], note: Any, resume_from: str) -> None:
         dry_run=False,
         note=note,
         resume_from=resume_from,
+        # Named before the fetch and handed over rather than worked out again:
+        # a downloaded paper carries a `Title:` that `episode_directory` could
+        # not have read, and a pipeline free to name the run off it would build
+        # the Episode in a sibling of the directory holding the paper.
+        run_dir=run_dir,
         # #17: arXiv named the paper and `pdfinfo` cannot — the PDF of *Attention
         # Is All You Need* carries no Title at all (#2) — so the first Source's
         # own title is handed over to outrank it.

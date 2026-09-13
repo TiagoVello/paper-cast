@@ -381,11 +381,18 @@ def primary_metadata(job: dict[str, Any], primary: dict[str, Any]) -> str:
     fetched. The pipeline asks the same question a moment later and has to get the
     same answer, so it is asked the same way, through the same `run_step`.
 
+    A Source that had to be fetched is never asked, even once it is on disk: its
+    name was settled by `download_name` before the download, and asking `pdfinfo`
+    on the retry would name the run something the first attempt's artifacts are
+    not filed under.
+
     Skipped when `pdfinfo` is not installed: `run_pipeline` checks for that itself
     and fails the Job before a title is used for anything, so the two cannot
     disagree over a tool neither of them has.
     """
     if job.get("title") or primary.get("title") or not primary.get("path"):
+        return ""
+    if pdf_url(primary):
         return ""
     if shutil.which("pdfinfo") is None:
         return ""
@@ -400,11 +407,12 @@ def episode_directory(job: dict[str, Any], config: dict[str, Any]) -> Path | Non
     off `pdfinfo` and the filename.
 
     Otherwise the name is worked out here from the same three things `run_pipeline`
-    will use — `resolve_title`, `run_slug` and the first Source — and fed the same
-    inputs, so the paper is downloaded into the directory the Episode is about to
-    claim rather than into a sibling of it (#17). The one thing this module gets to
-    choose, `download_name`, is chosen to keep that true when nothing has titled
-    the Job at all.
+    will use — `resolve_title`, `run_slug` and the first Source — so the paper is
+    downloaded into the directory the Episode is about to claim rather than into a
+    sibling of it (#17). Deciding it early is only half of that: `cast_job` hands
+    the answer to `run_pipeline` as its `run_dir`, because the pipeline sees the
+    downloaded file and would otherwise be free to name the run off a `Title:` this
+    function could not have read yet.
     """
     sources = job.get("sources") or []
     if not any(pdf_url(source) for source in sources):

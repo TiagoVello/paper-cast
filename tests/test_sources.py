@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import paper_cast as pc  # noqa: E402
 import queue_cli as q  # noqa: E402
 import sources  # noqa: E402
+import youtube_auth as ya  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "arxiv"
 
@@ -631,6 +632,50 @@ class QueueingTest(SourcesTestCase):
         self.assertEqual(pdfs[0].parent, config["output_dir"] / "attention-is-all-you-need")
         # And the Source now knows where it landed, for the next write of the Job.
         self.assertEqual(job["sources"][0]["path"], str(pdfs[0]))
+
+    def cast_for_real(self, job, metadata):
+        """`cast_job` with only the foreign programs and the upload stubbed out.
+
+        Resumed at the upload, so the pipeline is the real one — it asks `pdfinfo`
+        about the paper and names the run — without a NotebookLM cycle in a test.
+        """
+        facts = {}
+        with mock.patch.object(pc, "missing_tools", lambda: []), \
+             mock.patch.object(ya, "check_credential", lambda: None), \
+             mock.patch.object(ya, "upload_private", lambda *args: {"id": "vid123"}), \
+             mock.patch.object(pc, "run_step", lambda label, command: metadata):
+            q.cast_job(job, facts.update, pc.STAGE_UPLOADING)
+        return facts
+
+    def test_the_episode_is_built_in_the_directory_its_paper_was_fetched_into(self):
+        # A downloaded paper carries a `Title:` that nothing could have read when
+        # the directory was named — so the pipeline, free to name the run itself,
+        # would build the Episode in a sibling of the directory holding its own
+        # paper, and `tidy_up` would never go near the orphan (#17).
+        self.add("https://example.org/papers/attention_final.pdf")
+        job, = q.all_jobs()
+        self.answers(answering(PDF_BYTES))
+        facts = self.cast_for_real(job, "Title:          A Paper With Its Own Title\n")
+        paper = Path(job["sources"][0]["path"])
+        self.assertEqual(paper.parent, Path(facts["run_dir"]))
+        self.assertEqual([path.name for path in self.config["output_dir"].iterdir()],
+                         ["attention-final"])
+        # And the Episode is still called what the paper calls itself.
+        self.assertEqual(facts["title"], "A Paper With Its Own Title")
+
+    def test_a_retry_builds_the_episode_where_the_first_attempt_put_the_paper(self):
+        # The Job file carries the path now, so `pdfinfo` could be asked about a
+        # file that was not there the first time round. Asking it would name the
+        # retry's run directory something the first attempt's artifacts are not in.
+        self.add("https://example.org/papers/attention_final.pdf")
+        job, = q.all_jobs()
+        self.answers(answering(PDF_BYTES))
+        first = self.cast(job)
+        self.answers(raising(AssertionError("downloaded the same paper twice")))
+        with mock.patch.object(sources.shutil, "which", return_value="/usr/bin/pdfinfo"):
+            second = self.cast(job)
+        self.assertEqual(second.kwargs["run_dir"], first.kwargs["run_dir"])
+        self.assertEqual(first.kwargs["run_dir"], first.args[0][0].parent)
 
     def test_a_job_of_papers_on_disk_reaches_the_pipeline_exactly_as_before(self):
         paper = self.paper()

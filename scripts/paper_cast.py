@@ -553,6 +553,7 @@ def run_pipeline(
     note: Any = None,
     resume_from: str | None = None,
     source_title: str = "",
+    run_dir: Path | None = None,
 ) -> int:
     """Paper(s) in, episode up. Optionally reporting where it is, and skipping what is done.
 
@@ -574,6 +575,13 @@ def run_pipeline(
     that succeeded: an upload that failed re-uploads the `.mp4` on disk without
     going near NotebookLM, which is the whole point of it. The caller is the one
     that checked the artifacts are still there — see `queue_cli.resume_stage`.
+
+    `run_dir` is the directory a Source was already downloaded into (#17): it had
+    to be named before the fetch, so it is handed over rather than worked out a
+    second time here, where `pdfinfo` can now read a `Title:` off the downloaded
+    file that nothing could have read beforehand. The title below is still the
+    paper's own — only *where* the run lands is settled elsewhere. None for a bare
+    `paper-cast cast`, and for a Job with nothing to fetch: both name it here.
     """
     note = note or (lambda facts: None)
     resume_from = resume_from or STAGE_GENERATING
@@ -612,7 +620,7 @@ def run_pipeline(
     title = resolve_title(
         title_override, metadata, primary, extra=len(pdfs) - 1, source_title=source_title
     )
-    run = RunPaths(run_directory(title, primary, config))
+    run = RunPaths(run_dir or run_directory(title, primary, config))
     run.dir.mkdir(parents=True, exist_ok=True)
     say(f"{title}\n  {run.dir}")
     note({"stage": resume_from, "title": title, "run_dir": str(run.dir)})
