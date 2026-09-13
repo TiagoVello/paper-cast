@@ -766,7 +766,7 @@ Item {
               TextField {
                 id: arxivField
                 width: parent.width
-                placeholderText: "paste an arXiv link or id"
+                placeholderText: "Paste an arXiv link or id"
                 onAccepted: { root.resolveArxiv(text); }
               }
 
