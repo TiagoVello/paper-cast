@@ -70,6 +70,13 @@ PACMAN_PACKAGES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("poppler", ("pdfinfo", "pdftoppm")),
     # uv is not a paper-cast dependency; it is how `nlm` is distributed, below.
     ("uv", ("uv",)),
+    # The bar widget's, not the pipeline's: #14's QueueState.qml shells out to
+    # `inotifywait` to watch the state directory, and it is not in a base Arch
+    # install. Without it the icon loads and its colour never changes, which is
+    # the entire state channel. Deliberately not in `paper_cast.REQUIRED_TOOLS`
+    # — that tuple is the pipeline's preflight, and a headless box should not be
+    # refused a Job over a package the pipeline never invokes.
+    ("inotify-tools", ("inotifywait",)),
 )
 
 # `nlm` ships as a uv tool. Not pip, not pacman, not the AUR: `uv tool install`
@@ -217,7 +224,7 @@ def step_prerequisites(prompt: Prompt) -> str:
     packages = missing_packages(shutil.which)
     nlm_missing = shutil.which("nlm") is None
     if not packages and not nlm_missing:
-        note("ffmpeg, poppler, uv and nlm are all on PATH.")
+        note("ffmpeg, poppler, uv, inotify-tools and nlm are all on PATH.")
         return SATISFIED
 
     if packages:
@@ -652,7 +659,7 @@ def uninstall_command(args: argparse.Namespace) -> int:
     say("Also untouched, because they are not paper-cast's to take away:")
     note(f"  nlm         — `uv tool uninstall {NLM_PACKAGE}`, and it holds your")
     note("                NotebookLM session")
-    note("  ffmpeg, poppler, uv — system packages other things use")
+    note("  ffmpeg, poppler, uv, inotify-tools — system packages other things use")
     note("  the notebooks in NotebookLM, and the Episodes on your YouTube channel")
 
     if shutil.which("omarchy-plugin-list") is not None:

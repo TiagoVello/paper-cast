@@ -49,12 +49,16 @@ outstanding, and names what.
 
 | | Step | Already done when |
 |---|---|---|
-| 1 | `ffmpeg`, `poppler` and `uv` from pacman; `nlm` from `uv tool install notebooklm-mcp-cli` | each program is on `PATH` |
+| 1 | `ffmpeg`, `poppler`, `uv` and `inotify-tools` from pacman; `nlm` from `uv tool install notebooklm-mcp-cli` | each program is on `PATH` |
 | 2 | `nlm login`, once, in a visible browser | the stored NotebookLM session still refreshes |
 | 3 | The YouTube credential — a ten-stage walk through the Google Cloud console | `client_secret.json` and `youtube_token.json` are both on disk |
 | 4 | `~/.local/bin/paper-cast` | it is there and points at this checkout |
 | 5 | Five starter Steering presets in your config, and which one is loaded | `~/.config/paper-cast/config.toml` exists |
 | 6 | The bar widget | `omarchy plugin list` reports it enabled |
+
+Of those, `inotify-tools` is the only one the pipeline never calls: it is how the
+bar widget watches for a Job changing stage, so a headless machine running
+paper-cast from a terminal can skip it. Everything else is the pipeline's.
 
 Step 1 needs `sudo`, and steps 2 and 3 open a browser. Each says so before it
 asks. Without a terminal to ask on, Setup refuses rather than guessing; that is
@@ -138,7 +142,8 @@ directory that is gone.
 what it is leaving: your config and the YouTube credential in
 `~/.config/paper-cast/`, the Queue's memory in `~/.local/state/paper-cast/`, and
 your Run directories. None of that comes back by re-running Setup, which is why
-none of it is deleted for you. `nlm`, `ffmpeg` and `poppler` stay too — they are
+none of it is deleted for you. `nlm`, `ffmpeg`, `poppler` and `inotify-tools`
+stay too — they are
 system packages other things use.
 
 ## Requirements

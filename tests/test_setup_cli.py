@@ -43,7 +43,7 @@ def which_map(present):
     return lambda program: f"/usr/bin/{program}" if program in present else None
 
 
-ALL_PROGRAMS = ("ffmpeg", "pdfinfo", "pdftoppm", "uv", "nlm")
+ALL_PROGRAMS = ("ffmpeg", "pdfinfo", "pdftoppm", "uv", "inotifywait", "nlm")
 
 
 def quietly(call, *args, **kwargs):
@@ -109,11 +109,23 @@ class PrerequisiteTest(unittest.TestCase):
 
     def test_a_package_is_named_when_any_one_of_its_programs_is_absent(self):
         # poppler ships both, so losing either is losing the package.
-        self.assertEqual(sc.missing_packages(which_map(("ffmpeg", "pdfinfo", "uv"))), ["poppler"])
-        self.assertEqual(sc.missing_packages(which_map(("ffmpeg", "pdftoppm", "uv"))), ["poppler"])
+        self.assertEqual(
+            sc.missing_packages(which_map(("ffmpeg", "pdfinfo", "uv", "inotifywait"))), ["poppler"]
+        )
+        self.assertEqual(
+            sc.missing_packages(which_map(("ffmpeg", "pdftoppm", "uv", "inotifywait"))), ["poppler"]
+        )
 
-    def test_a_bare_machine_needs_all_three(self):
-        self.assertEqual(sc.missing_packages(which_map(())), ["ffmpeg", "poppler", "uv"])
+    def test_a_bare_machine_needs_every_package(self):
+        self.assertEqual(
+            sc.missing_packages(which_map(())), ["ffmpeg", "poppler", "uv", "inotify-tools"]
+        )
+
+    def test_inotify_tools_is_the_bar_widgets_and_never_the_pipelines(self):
+        # #14's QueueState.qml is the only thing that calls `inotifywait`, so a
+        # headless box must not be refused a Job for want of it.
+        self.assertIn("inotify-tools", sc.missing_packages(which_map(())))
+        self.assertNotIn("inotifywait", pc.REQUIRED_TOOLS)
 
     def test_pacman_is_asked_for_what_is_needed_and_nothing_more(self):
         self.assertEqual(
@@ -456,7 +468,7 @@ class SecondRunTest(unittest.TestCase):
     def test_a_declined_required_step_is_named_and_the_exit_code_says_not_ready(self):
         prompt = sc.Prompt(assume_yes=False, interactive=True, gum=None)
         with self.machine(allow_actions=False), mock.patch.object(
-            sc.shutil, "which", which_map(("ffmpeg", "pdfinfo", "pdftoppm", "uv"))
+            sc.shutil, "which", which_map(("ffmpeg", "pdfinfo", "pdftoppm", "uv", "inotifywait"))
         ), mock.patch.object(sc, "Prompt", return_value=prompt), mock.patch.object(
             prompt, "confirm", return_value=False
         ):
