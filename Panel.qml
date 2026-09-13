@@ -54,7 +54,17 @@ Item {
   // (never mutated in place) so the carousel's bindings see a new array —
   // the settled discipline from variant-b-and-dnd.md.
   property var presets: []
-  property int presetIndex: 0
+  // -1 is the detached state: `steering_preset = ""`, which is both what an
+  // empty `presets` leaves (the documented default in config.example.toml) and
+  // the hand-written Steering config_cli.loaded_text goes out of its way to
+  // keep. Everything that indexes `presets` goes through `currentPreset`, so
+  // that state has one spelling here rather than one per call site.
+  property int presetIndex: -1
+  readonly property var currentPreset: (root.presetIndex >= 0 && root.presetIndex < root.presets.length)
+    ? root.presets[root.presetIndex] : null
+  // `focus` as `config list` last gave it, so an edit can be told apart from
+  // applyConfig() loading one — a detached Steering has no preset to compare to.
+  property string loadedFocus: ""
   // The loaded preset's text, edited live. No character limit and no counter
   // here — the 500 cap on Google's own Customize box is not a server rule
   // and this editor does not reimplement it (#15).
@@ -71,10 +81,15 @@ Item {
     // the editor's own onTextChanged only writes back here when it differs.
     if (steeringEditor.text !== root.steering) steeringEditor.text = root.steering
     // Editing the loaded text rewrites that preset in place, live (#15).
-    if (root.presets.length && root.presets[root.presetIndex]
-        && root.presets[root.presetIndex].text !== root.steering) {
-      root.mutatePreset(root.presetIndex, { text: root.steering })
-      steeringSaveTimer.restart() // debounced — see the Timer below
+    if (root.currentPreset) {
+      if (root.currentPreset.text !== root.steering) {
+        root.mutatePreset(root.presetIndex, { text: root.steering })
+        steeringSaveTimer.restart() // debounced — see the Timer below
+      }
+    } else if (root.steering !== root.loadedFocus) {
+      // Detached: no preset to rewrite, but `focus` is still the Steering that
+      // reaches the hosts, so the edit is still one that has to be saved.
+      steeringSaveTimer.restart()
     }
   }
 
@@ -86,11 +101,20 @@ Item {
     root.runConfigSet(presetNameWriter, "steering_preset", root.presets[root.presetIndex].name)
   }
 
-  function cyclePreset(delta) { root.selectPreset(root.presetIndex + delta) }
+  function cyclePreset(delta) {
+    // Detached, there is no current to step from: › loads the first preset and
+    // ‹ the last (selectPreset wraps -1 round to the end).
+    if (root.presetIndex < 0) { root.selectPreset(delta > 0 ? 0 : -1); return }
+    root.selectPreset(root.presetIndex + delta)
+  }
+
+  // Whether ‹ and › have anywhere to go: another preset, or — detached — the
+  // single preset nothing has loaded.
+  readonly property bool canCycle: root.presets.length > (root.currentPreset ? 1 : 0)
 
   function renamePreset(newName) {
     var trimmed = String(newName).trim()
-    var current = root.presets[root.presetIndex]
+    var current = root.currentPreset
     if (trimmed === "" || !current || trimmed === current.name) {
       // Reject the edit rather than leave the field showing something the
       // carousel never adopted.
@@ -109,42 +133,37 @@ Item {
 
   // Detach `steering_preset`, write the changed `presets` array, then re-point
   // `steering_preset` at `name` — the one ordering the strict parser accepts
-  // no matter what `presets` looked like before. Each step waits for the
-  // previous CLI call to actually finish, via `writer.onDone`.
+  // no matter what `presets` looked like before. runConfigSet runs them one at
+  // a time, in the order they are asked for, so asking is all this has to do.
   function renameSteeringPreset(name) {
     root.runConfigSet(presetNameWriter, "steering_preset", "")
-    presetNameWriter.onDone = function() {
-      root.runConfigSet(presetsWriter, "presets", JSON.stringify(root.presets))
-      presetsWriter.onDone = function() {
-        root.runConfigSet(presetNameWriter, "steering_preset", name)
-      }
-    }
+    root.runConfigSet(presetsWriter, "presets", JSON.stringify(root.presets))
+    root.runConfigSet(presetNameWriter, "steering_preset", name)
   }
 
   function addPreset() {
     // Clones the *loaded* Steering, not a blank one — a good Steering just
-    // typed becomes a preset without retyping (variant-b-and-dnd.md).
-    if (root.presets.length === 0) return
+    // typed becomes a preset without retyping (variant-b-and-dnd.md). From the
+    // detached state (presetIndex -1) that is how the first preset is made: the
+    // clone splices in at 0 and `steering_preset` attaches to it.
     var clone = { name: "New preset", text: root.steering }
     var next = root.presets.slice()
     next.splice(root.presetIndex + 1, 0, clone)
     root.presets = next
     root.presetIndex = root.presetIndex + 1
-    // Two independent `paper-cast` subprocesses started back to back still run
-    // concurrently — the second one's own `load_config` can race the first
-    // one's write and read `presets` before "New preset" is in it, and the
-    // strict parser then rejects `steering_preset` for naming a preset that
-    // (from where that read stood) doesn't exist yet. Wait for the first
-    // write to actually land before starting the second.
+    // Two independent `paper-cast` subprocesses started back to back would run
+    // concurrently — the second one's own `load_config` racing the first one's
+    // write and reading `presets` before "New preset" is in it, and the strict
+    // parser then rejecting `steering_preset` for naming a preset that (from
+    // where that read stood) doesn't exist yet. runConfigSet serialises them.
     root.runConfigSet(presetsWriter, "presets", JSON.stringify(root.presets))
-    presetsWriter.onDone = function() {
-      root.runConfigSet(presetNameWriter, "steering_preset", clone.name)
-    }
+    root.runConfigSet(presetNameWriter, "steering_preset", clone.name)
   }
 
   function deletePreset() {
-    // Never the last — an empty carousel has no way back.
-    if (root.presets.length <= 1) return
+    // Never the last — an empty carousel has no way back — and never when
+    // nothing is loaded: there would be no preset this was asked about.
+    if (root.presets.length <= 1 || !root.currentPreset) return
     var next = root.presets.slice()
     next.splice(root.presetIndex, 1)
     root.presets = next
@@ -159,7 +178,16 @@ Item {
     id: steeringSaveTimer
     interval: 400 // debounced: a keystroke must not shell out to `config set`
     onTriggered: {
+      // Both keys, because an edit changes both: the preset it belongs to and
+      // `focus`, the one that actually reaches the hosts. They go out one at a
+      // time (runConfigSet queues them) — `config set` reads the whole file and
+      // writes the whole file back, so two of these overlapping would end with
+      // the later rename dropping the other's key and silently reverting the
+      // edit that started this timer.
       root.runConfigSet(presetsWriter, "presets", JSON.stringify(root.presets))
+      // What `focus` is about to hold, so a detached edit typed back to what it
+      // said a moment ago is still an edit against the file, not against this.
+      root.loadedFocus = root.steering
       root.runConfigSet(focusWriter, "focus", root.steering)
     }
   }
@@ -425,18 +453,44 @@ Item {
     return ["bash", "-lc", quoted.join(" ")]
   }
 
+  // Every `config set` is a read-whole / change-one-key / write-whole of the
+  // same file, with no lock between them, so two that overlap end with the
+  // later rename winning outright and the other's key silently reverted. One
+  // queue for all of them, then: a write is asked for here and starts when the
+  // previous one has exited. That is also what keeps a `Process` from being
+  // handed a second write while it is up — `onStarted` has already fired by
+  // then, so the reassigned `pendingValue` would never reach its stdin and the
+  // write would be dropped without a trace.
+  property var configWrites: [] // [{proc, key, value}], in the order asked for
+  property bool configWriting: false
+
   function runConfigSet(proc, key, value) {
-    proc.stdinEnabled = true
-    proc.pendingValue = value
-    proc.command = root.shellCommand(["paper-cast", "config", "set", key, "--stdin"])
-    proc.running = true
+    var queued = root.configWrites.slice()
+    queued.push({ proc: proc, key: key, value: value })
+    root.configWrites = queued
+    root.pumpConfigWrites()
+  }
+
+  function pumpConfigWrites() {
+    if (root.configWriting || root.configWrites.length === 0) return
+    var queued = root.configWrites.slice()
+    var next = queued.shift()
+    root.configWrites = queued
+    root.configWriting = true
+    next.proc.onDone = function() {
+      root.configWriting = false
+      root.pumpConfigWrites()
+    }
+    next.proc.stdinEnabled = true
+    next.proc.pendingValue = next.value
+    next.proc.command = root.shellCommand(["paper-cast", "config", "set", next.key, "--stdin"])
+    next.proc.running = true
   }
 
   // One `Process` per key rather than one shared instance: a rename and an
   // edit can land in the same tick (renamePreset writes presets *and*
   // steering_preset), and each needs its own stdin pipe to close cleanly.
-  // `onDone` is how renameSteeringPreset() sequences three of these calls in a
-  // row without a second one starting before the first's write has landed.
+  // `onDone` is how the queue above learns a write has actually landed.
   Process {
     id: presetsWriter
     property string pendingValue: ""
@@ -492,13 +546,24 @@ Item {
   function applyConfig(raw) {
     var parsed
     try { parsed = JSON.parse(raw) } catch (e) { return }
-    if (!parsed || !Array.isArray(parsed.presets) || parsed.presets.length === 0) return
-    root.presets = parsed.presets
-    var index = 0
+    if (!parsed) return
+    root.presets = Array.isArray(parsed.presets) ? parsed.presets : []
+    // `focus` is the Steering that reaches the hosts, and there are two configs
+    // where it is the only one there is: no presets at all (config.example.toml's
+    // default, and what `config set focus --stdin` alone leaves), and a
+    // hand-written one that `steering_preset` deliberately names nothing. Start
+    // from it, and let a preset replace it only when one is actually named —
+    // taking presets[0] on faith would queue every Job with a Steering the user
+    // never wrote, or with none at all.
+    root.loadedFocus = typeof parsed.focus === "string" ? parsed.focus : ""
+    var index = -1
     for (var i = 0; i < root.presets.length; i++)
       if (root.presets[i].name === parsed.steering_preset) { index = i; break }
+    // Before `steering`, always: onSteeringChanged reads whichever preset is
+    // loaded, and loading one config's Steering against the last one's index
+    // would rewrite a preset nobody touched.
     root.presetIndex = index
-    root.steering = root.presets[index].text
+    root.steering = index >= 0 ? root.presets[index].text : root.loadedFocus
   }
 
   onOpenedChanged: {
@@ -589,7 +654,7 @@ Item {
               anchors.verticalCenter: parent.verticalCenter
               width: Style.space(30)
               text: "‹"
-              enabled: root.presets.length > 1
+              enabled: root.canCycle
               onClicked: root.cyclePreset(-1)
             }
 
@@ -607,7 +672,7 @@ Item {
               PanelActionButton {
                 iconText: "－"
                 tooltipText: "Delete the loaded preset"
-                enabled: root.presets.length > 1
+                enabled: root.presets.length > 1 && root.currentPreset !== null
                 hoverColor: root.urgent
                 onClicked: root.deletePreset()
               }
@@ -618,7 +683,7 @@ Item {
               anchors.verticalCenter: parent.verticalCenter
               width: Style.space(30)
               text: "›"
-              enabled: root.presets.length > 1
+              enabled: root.canCycle
               onClicked: root.cyclePreset(1)
             }
 
@@ -634,7 +699,7 @@ Item {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.subtitle
                 color: root.fg
-                text: root.presets.length ? root.presets[root.presetIndex].name : ""
+                text: root.currentPreset ? root.currentPreset.name : ""
                 onEditingFinished: root.renamePreset(text)
               }
 
@@ -752,8 +817,11 @@ Item {
                 color: root.muted
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
-                text: "STEERING — edits save to “"
-                  + (root.presets.length ? root.presets[root.presetIndex].name : "") + "”"
+                // Detached, the edit still saves — to `focus`, which is what a
+                // Job is steered by — it just has no preset to save into.
+                text: root.currentPreset
+                  ? ("STEERING — edits save to “" + root.currentPreset.name + "”")
+                  : "STEERING"
               }
 
               Rectangle {
