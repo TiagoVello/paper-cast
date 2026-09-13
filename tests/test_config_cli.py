@@ -212,6 +212,47 @@ class ConfigFileTest(unittest.TestCase):
         self.assertEqual(pc.load_config(self.path), pc.parse_config(""))
 
 
+class WriteFreshConfigTest(unittest.TestCase):
+    """#12's Setup seam: the starter presets land in the user's own file."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "config.toml"
+
+    def test_it_writes_the_starter_presets_the_panel_flips_through(self):
+        self.assertIs(cc.write_fresh_config(self.path), True)
+        presets = pc.load_config(self.path)["presets"]
+        self.assertEqual(
+            [preset["name"] for preset in presets],
+            ["ML researcher", "Skim it", "Critical read", "Teach me", "Adjacent field"],
+        )
+
+    def test_the_first_preset_is_the_loaded_one_so_a_fresh_box_has_a_steering(self):
+        cc.write_fresh_config(self.path)
+        config = pc.load_config(self.path)
+        self.assertEqual(config["steering_preset"], "ML researcher")
+        self.assertEqual(config["focus"], cc.STARTER_PRESETS[0]["text"])
+
+    def test_everything_else_is_left_at_its_default(self):
+        cc.write_fresh_config(self.path)
+        config = pc.load_config(self.path)
+        for key in ("language", "format", "length", "output_dir", "keep_artifacts", "keep_video"):
+            self.assertEqual(config[key], pc.parse_config("")[key])
+
+    def test_a_re_run_of_setup_never_overwrites_a_steering_somebody_wrote(self):
+        cc.write_fresh_config(self.path)
+        cc.save_config(pc.load_config(self.path) | {"steering_preset": "", "focus": "Mine."}, self.path)
+        self.assertIs(cc.write_fresh_config(self.path), False)
+        self.assertEqual(pc.load_config(self.path)["focus"], "Mine.")
+
+    def test_no_starter_preset_is_capped_at_the_textareas_five_hundred_characters(self):
+        # #11: the cap is Google's own textarea, so nothing here enforces one. The
+        # presets are short because they are prompts, not because they must be.
+        for preset in cc.STARTER_PRESETS:
+            self.assertTrue(preset["text"].strip())
+
+
 class ConfigCommandTest(unittest.TestCase):
     """The surface the bar panel shells out to, driven the way a shell drives it."""
 

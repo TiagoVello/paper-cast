@@ -138,6 +138,84 @@ def save_config(config: dict[str, Any], path: Path = CONFIG_FILE) -> None:
     temporary.replace(path)
 
 
+# --- what Setup writes ------------------------------------------------------
+
+# The starter Steering presets. Setup writes these into the user's own
+# config.toml (#12 calls write_fresh_config below) rather than paper-cast keeping
+# them as a hidden fallback: the user owns the file, and a fallback would mean
+# editing a preset never stuck. Five, because a carousel of five is flipped
+# through and a carousel of twenty is searched.
+STARTER_PRESETS: tuple[dict[str, str], ...] = (
+    {
+        "name": "ML researcher",
+        "text": (
+            "You are talking to a machine-learning researcher who reads papers every week. "
+            "Skip the background: no explaining what a transformer, a learning rate or an "
+            "embedding is. Spend the time on the method, the training setup and the ablations, "
+            "name the baselines, and say where the comparison flatters the paper."
+        ),
+    },
+    {
+        "name": "Skim it",
+        "text": (
+            "Five minutes, not twenty. What problem, what idea, what result, and whether it is "
+            "worth reading in full. No history of the field, no motivation section, no worked "
+            "examples — and say so plainly if the answer is that it is not worth it."
+        ),
+    },
+    {
+        "name": "Critical read",
+        "text": (
+            "Read it like a reviewer looking for the reason to reject. Where is the evidence "
+            "thin, which claim outruns the experiment that supports it, what is missing from the "
+            "ablations, and which baseline is doing the real work? End with what you would ask "
+            "the authors for."
+        ),
+    },
+    {
+        "name": "Teach me",
+        "text": (
+            "I am new to this area. Build up from the problem the paper is trying to solve, "
+            "define each term as it arrives, and carry one concrete example all the way through. "
+            "Take the time — saying the important idea a second way is better than covering "
+            "everything once."
+        ),
+    },
+    {
+        "name": "Adjacent field",
+        "text": (
+            "I do research, and not in this field. Assume the maths is fine and the field's own "
+            "vocabulary and landmark results are not. Translate the jargon the first time it "
+            "appears, say what is standard practice here, and be clear about which part of this "
+            "paper is the new one."
+        ),
+    },
+)
+
+
+def write_fresh_config(path: Path = CONFIG_FILE) -> bool:
+    """Write a config holding the defaults and the starter presets — Setup's seam.
+
+    Idempotent, as Setup is: an existing file is left exactly as it stands, because
+    a re-run must never overwrite a Steering somebody wrote. True when it wrote one.
+    """
+    if path.exists():
+        return False
+    loaded = STARTER_PRESETS[0]
+    save_config(
+        parse_config("")
+        | {
+            "presets": [dict(preset) for preset in STARTER_PRESETS],
+            # The first preset is the loaded one, so a fresh box has a Steering
+            # rather than hosts talking to nobody in particular.
+            "steering_preset": loaded["name"],
+            "focus": loaded["text"],
+        },
+        path,
+    )
+    return True
+
+
 # --- the subcommand ---------------------------------------------------------
 
 
