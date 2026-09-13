@@ -298,6 +298,46 @@ class WrapperTest(unittest.TestCase):
         self.assertFalse(sc.is_ours(self.wrapper))
         self.assertFalse(sc.is_ours(self.bin / "not-there"))
 
+    def test_a_symlink_at_the_wrapper_path_is_never_written_through(self):
+        # The exact shape of the incident this guards against: a hand-made
+        # symlink at ~/.local/bin/paper-cast pointing into a real working
+        # checkout. Setup must not open that path for writing and follow it
+        # into the file it points at.
+        self.bin.mkdir(parents=True)
+        victim = Path(self.tmp.name) / "working-checkout" / "paper_cast.py"
+        victim.parent.mkdir(parents=True)
+        victim_contents = "#!/usr/bin/env python3\nprint('the real CLI, hand-edited')\n"
+        victim.write_text(victim_contents)
+        self.wrapper.symlink_to(victim)
+
+        prompt = sc.Prompt(assume_yes=False, interactive=True, gum=None)
+        with mock.patch.object(prompt, "confirm", return_value=True):
+            status, _ = self.wrote(prompt)
+
+        self.assertEqual(status, sc.DONE)
+        # The symlink is gone, replaced with a real file that is ours...
+        self.assertFalse(self.wrapper.is_symlink())
+        self.assertTrue(sc.wrapper_is_current(self.wrapper, self.entry))
+        # ...and the file it used to point at is untouched, byte for byte.
+        self.assertEqual(victim.read_text(), victim_contents)
+
+    def test_a_broken_symlink_is_replaced_and_never_followed(self):
+        # `exists()` calls a dangling symlink absent, which would have written
+        # the wrapper to wherever it pointed — creating a file somewhere nobody
+        # asked for one.
+        self.bin.mkdir(parents=True)
+        target = Path(self.tmp.name) / "gone" / "paper_cast.py"
+        self.wrapper.symlink_to(target)
+
+        prompt = sc.Prompt(assume_yes=False, interactive=True, gum=None)
+        with mock.patch.object(prompt, "confirm", return_value=True):
+            status, _ = self.wrote(prompt)
+
+        self.assertEqual(status, sc.DONE)
+        self.assertFalse(self.wrapper.is_symlink())
+        self.assertTrue(sc.wrapper_is_current(self.wrapper, self.entry))
+        self.assertFalse(target.exists())
+
     def test_a_missing_bin_directory_on_path_is_warned_about(self):
         with mock.patch.object(sc, "BIN_DIR", self.bin), mock.patch.object(
             sc, "WRAPPER", self.wrapper
@@ -510,6 +550,21 @@ class UninstallTest(unittest.TestCase):
             sc.shutil, "which", which_map(("omarchy-plugin-list",) if omarchy else ())
         ):
             yield
+
+    def test_a_symlink_is_left_alone_and_what_it_points_at_survives(self):
+        # The mirror of the write bug (#12): `uninstall` must not decide a
+        # symlink is ours by reading through it, and must not remove it.
+        victim = self.tmp / "working-checkout" / "paper_cast.py"
+        victim.parent.mkdir(parents=True)
+        victim.write_text("#!/usr/bin/env python3\nprint('the real CLI')\n")
+        self.wrapper.unlink()
+        self.wrapper.symlink_to(victim)
+
+        with self.machine():
+            quietly(sc.uninstall_command, argparse.Namespace(assume_yes=True))
+
+        self.assertTrue(self.wrapper.is_symlink())
+        self.assertEqual(victim.read_text(), "#!/usr/bin/env python3\nprint('the real CLI')\n")
 
     def uninstall(self, assume_yes=True):
         with self.machine():
