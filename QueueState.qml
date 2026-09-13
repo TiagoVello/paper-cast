@@ -141,12 +141,15 @@ Item {
   // nothing until a Job file moves. inotifywait exits non-zero when the state
   // directory does not exist yet — before the first Job is ever queued — so
   // the retry lives inside bash, where it is a sleep, rather than in a QML
-  // Timer respawning a process every second for the length of a session.
+  // Timer respawning a process every second for the length of a session. Only
+  // the branch that actually saw something says so: a retry that reports a
+  // change too would have a machine with no Queue yet rescanning every five
+  // seconds for the whole session, which is the cost this watch exists to avoid.
   Process {
     id: watcher
     command: ["bash", "-c",
-      "while :; do inotifywait -q -q -e close_write,create,delete,moved_to,moved_from -r \"$0\""
-        + " >/dev/null 2>&1 || sleep 5; printf 'changed\\n'; done",
+      "while :; do if inotifywait -q -q -e close_write,create,delete,moved_to,moved_from -r \"$0\""
+        + " >/dev/null 2>&1; then printf 'changed\\n'; else sleep 5; fi; done",
       queue.stateDir]
     running: true
     stdout: SplitParser {
