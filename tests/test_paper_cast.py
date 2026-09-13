@@ -24,6 +24,7 @@ class ParseConfigTest(unittest.TestCase):
         self.assertEqual(config["length"], "default")
         self.assertEqual(config["focus"], "")
         self.assertIs(config["keep_artifacts"], False)
+        self.assertIs(config["keep_video"], False)
 
     def test_a_key_in_the_file_wins_over_its_default(self):
         config = pc.parse_config('language = "pt-BR"\nformat = "brief"\n')
@@ -56,9 +57,10 @@ class ParseConfigTest(unittest.TestCase):
         self.assertIn("length", str(caught.exception))
 
     def test_a_key_of_the_wrong_type_is_rejected(self):
-        with self.assertRaises(pc.ConfigError) as caught:
-            pc.parse_config('keep_artifacts = "yes"')
-        self.assertIn("keep_artifacts", str(caught.exception))
+        for key in ("keep_artifacts", "keep_video"):
+            with self.subTest(key=key), self.assertRaises(pc.ConfigError) as caught:
+                pc.parse_config(f'{key} = "yes"')
+            self.assertIn(key, str(caught.exception))
 
     def test_the_shipped_example_says_exactly_what_the_defaults_are(self):
         # config.example.toml is the repo's only prose about the settings, so it
@@ -338,24 +340,34 @@ class EpisodeDescriptionTest(unittest.TestCase):
 
 
 class CleanupTest(unittest.TestCase):
-    """#8's table: keep_artifacts = false means tidy up after a clean run, never delete evidence."""
+    """#8's rule: the keep_ keys tidy up after a clean run, and never delete evidence."""
 
-    def targets(self, uploaded, keep_artifacts):
+    def targets(self, uploaded, **overrides):
         run = pc.RunPaths(Path("/videos/paper-cast/slug"))
-        return pc.cleanup_targets(run, {"keep_artifacts": keep_artifacts}, uploaded=uploaded)
+        return [
+            path.name
+            for path in pc.cleanup_targets(run, pc.parse_config("") | overrides, uploaded=uploaded)
+        ]
 
-    def test_a_clean_run_sheds_the_intermediates_and_keeps_the_video(self):
-        targets = self.targets(uploaded=True, keep_artifacts=False)
+    def test_a_clean_run_on_the_defaults_sheds_all_three(self):
+        # The episode is on YouTube by now; the local copy is a second copy.
+        self.assertEqual(self.targets(uploaded=True), ["cover.png", "episode.m4a", "episode.mp4"])
+
+    def test_keep_video_keeps_the_mp4_and_still_sheds_the_intermediates(self):
         self.assertEqual(
-            [path.name for path in targets], ["cover.png", "episode.m4a"]
+            self.targets(uploaded=True, keep_video=True), ["cover.png", "episode.m4a"]
         )
 
-    def test_keep_artifacts_keeps_all_three(self):
-        self.assertEqual(self.targets(uploaded=True, keep_artifacts=True), [])
+    def test_keep_artifacts_keeps_the_intermediates_and_still_sheds_the_mp4(self):
+        self.assertEqual(self.targets(uploaded=True, keep_artifacts=True), ["episode.mp4"])
+
+    def test_both_keys_together_keep_all_three(self):
+        self.assertEqual(self.targets(uploaded=True, keep_artifacts=True, keep_video=True), [])
 
     def test_a_run_that_never_uploaded_deletes_nothing(self):
-        # A half-finished run is exactly when the .m4a needs to still be there.
-        self.assertEqual(self.targets(uploaded=False, keep_artifacts=False), [])
+        # A half-finished run is exactly when the .m4a needs to still be there — and
+        # with the upload never made, the .mp4 is the only copy of the episode.
+        self.assertEqual(self.targets(uploaded=False), [])
 
 
 class RunPathsTest(unittest.TestCase):

@@ -36,15 +36,26 @@ focus = ""
 # re-running a paper almost always means "that one came out wrong, do it again".
 output_dir = "~/Videos/paper-cast"
 
-# Whether to keep the intermediates once the episode is safely uploaded:
+# What survives a clean run. One key per artifact class, each meaning "keep this
+# once the episode is safely on the channel":
 #
-#   situation                        | behaviour
-#   ---------------------------------|--------------------------------------------
-#   false, upload succeeded          | delete cover.png + episode.m4a, keep the .mp4
-#   true,  upload succeeded          | keep all three
-#   any failure                      | delete nothing, print the run directory
-#   --dry-run                        | delete nothing — there was no upload
+#   keep_artifacts   cover.png and episode.m4a — what the mux was made from
+#   keep_video       episode.mp4 — the file that was uploaded
 #
-# In short: false means *tidy up after a clean run*, never *delete evidence*.
-# A half-finished run is exactly when the .m4a needs to still be there.
+#   situation                     | behaviour
+#   ------------------------------|------------------------------------------------
+#   both false, upload succeeded  | delete all three, and the empty run directory
+#   keep_video = true             | the .mp4 stays
+#   keep_artifacts = true         | cover.png and episode.m4a stay
+#   any failure                   | delete nothing, print the run directory
+#   --dry-run                     | delete nothing — there was no upload
+#
+# In short: false means *tidy up after a clean run*, never *delete evidence*. A
+# half-finished run is exactly when the .m4a needs to still be there, and a run
+# that never uploaded is holding the only copy of the episode.
+#
+# keep_video defaults off because the upload already happened — YouTube has the
+# episode, and the local copy is a second one at ~45 MB per 20 minutes. Turn it
+# on if you want to keep the file too.
 keep_artifacts = false
+keep_video = false

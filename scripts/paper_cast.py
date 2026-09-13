@@ -38,6 +38,7 @@ DEFAULTS: dict[str, Any] = {
     "focus": "",
     "output_dir": "~/Videos/paper-cast",
     "keep_artifacts": False,
+    "keep_video": False,
 }
 REQUIRED_TOOLS = ("nlm", "pdfinfo", "pdftoppm", "ffmpeg")
 
@@ -101,6 +102,7 @@ def parse_config(text: str) -> dict[str, Any]:
     for key in ("language", "focus", "output_dir"):
         _check_type(key, config[key], str)
     _check_type("keep_artifacts", config["keep_artifacts"], bool)
+    _check_type("keep_video", config["keep_video"], bool)
     _check_choice("format", _check_type("format", config["format"], str), FORMATS)
     _check_choice("length", _check_type("length", config["length"], str), LENGTHS)
     if not config["language"]:
@@ -263,10 +265,17 @@ class RunPaths:
 
 
 def cleanup_targets(run: RunPaths, config: dict[str, Any], uploaded: bool) -> list[Path]:
-    """What a finished run sheds. Nothing, unless the episode actually went up."""
-    if not uploaded or config["keep_artifacts"]:
+    """What a finished run sheds. Nothing, unless the episode actually went up.
+
+    A failed or dry run keeps everything, whatever the config says: that is when
+    the artifacts are the only copy of a five-minute generation cycle.
+    """
+    if not uploaded:
         return []
-    return [run.cover, run.audio]
+    targets = [] if config["keep_artifacts"] else [run.cover, run.audio]
+    if not config["keep_video"]:
+        targets.append(run.video)
+    return targets
 
 
 # --- foreign programs -------------------------------------------------------
@@ -402,6 +411,15 @@ def generate_episode(pdf: Path, title: str, config: dict[str, Any], run: RunPath
     download_audio(notebook_id, artifact_id, run.audio)
 
 
+def tidy_up(run: RunPaths, config: dict[str, Any]) -> None:
+    """Shed what the config does not want kept, once the episode is safely up."""
+    for leftover in cleanup_targets(run, config, uploaded=True):
+        leftover.unlink(missing_ok=True)
+    if not any(run.dir.iterdir()):
+        # Nothing was kept, so leave no empty directory per paper behind either.
+        run.dir.rmdir()
+
+
 def run_pipeline(pdf: Path, title_override: str | None, config: dict[str, Any], dry_run: bool) -> int:
     if not pdf.is_file():
         raise PipelineError(f"no such file: {pdf}")
@@ -443,11 +461,10 @@ def run_pipeline(pdf: Path, title_override: str | None, config: dict[str, Any], 
         print(f"artifacts kept in {run.dir}", file=sys.stderr)
         raise
 
-    for leftover in cleanup_targets(run, config, uploaded=True):
-        leftover.unlink(missing_ok=True)
-
+    # The link first: a tidy-up that fails must not bury where the episode went.
     video_id = video.get("id", "?")
     say(f"https://studio.youtube.com/video/{video_id}/edit")
+    tidy_up(run, config)
     return 0
 
 
