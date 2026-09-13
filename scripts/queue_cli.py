@@ -330,7 +330,7 @@ def cast_job(job: dict[str, Any], note: Any, resume_from: str) -> None:
     # The Job's own Steering wins over the config's: it was snapshotted when the
     # Job was queued, and a preset flipped through since must not re-steer a Job
     # that is already waiting in line.
-    config = pc.load_config() | {"focus": job["steering"]}
+    config = pc.load_config(pc.CONFIG_FILE) | {"focus": job["steering"]}
     pc.run_pipeline(
         Path(source["path"]),
         job["title"] or None,
@@ -344,9 +344,11 @@ def cast_job(job: dict[str, Any], note: Any, resume_from: str) -> None:
 def run_job(job: dict[str, Any]) -> None:
     """Run one Job to an end, and record every step of it in the Job file.
 
-    Never raises: this runs detached with nowhere to print, so an error that got
-    out of here would be a Job frozen mid-stage and a user with nothing to read.
-    Whatever went wrong lands in `error`, and the log has the rest.
+    A failure is recorded rather than raised: this runs detached with nowhere to
+    print, so an error that got out of here would be a Job frozen mid-stage and a
+    user with nothing to read. Whatever went wrong lands in `error`, and the log
+    has the rest. The one exception is a Ctrl-C, which is recorded and then passed
+    on, because it was aimed at the runner and not at this Job.
     """
     state = dict(job)
     resume_from = resume_stage(state)
@@ -373,15 +375,21 @@ def run_job(job: dict[str, Any]) -> None:
         with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
             try:
                 cast_job(state, note, resume_from)
-            except (*pc.RUN_ERRORS, KeyboardInterrupt) as err:
-                note({"stage": pc.STAGE_FAILED, "failed_stage": state["stage"],
-                      "error": str(err) or err.__class__.__name__, "finished_at": now()})
-                return
-            except Exception as err:  # noqa: BLE001 — see the docstring
-                note({"stage": pc.STAGE_FAILED, "failed_stage": state["stage"],
-                      "error": f"{err.__class__.__name__}: {err}", "finished_at": now()})
-                return
-            note({"stage": pc.STAGE_DONE, "finished_at": now()})
+            except (KeyboardInterrupt, Exception) as err:
+                named = isinstance(err, (*pc.RUN_ERRORS, KeyboardInterrupt)) and str(err)
+                note({
+                    "stage": pc.STAGE_FAILED,
+                    "failed_stage": state["stage"],
+                    # A failure the pipeline names reads as it was written; anything
+                    # else carries its class, because a bare message out of a bug
+                    # says nothing about where it came from.
+                    "error": str(err) if named else f"{type(err).__name__}: {err}",
+                    "finished_at": now(),
+                })
+                if isinstance(err, KeyboardInterrupt):
+                    raise
+            else:
+                note({"stage": pc.STAGE_DONE, "finished_at": now()})
 
 
 def drain() -> int:
@@ -436,7 +444,7 @@ def steering_for(args: argparse.Namespace) -> tuple[str, str]:
         return read_stdin(), ""
     if args.steering is not None:
         return args.steering, ""
-    config = pc.load_config()
+    config = pc.load_config(pc.CONFIG_FILE)
     return config["focus"], config["steering_preset"]
 
 
