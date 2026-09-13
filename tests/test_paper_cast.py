@@ -9,6 +9,7 @@ to inline `nlm` cannot invalidate them.
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -23,6 +24,8 @@ class ParseConfigTest(unittest.TestCase):
         self.assertEqual(config["format"], "deep_dive")
         self.assertEqual(config["length"], "default")
         self.assertEqual(config["focus"], "")
+        self.assertEqual(config["steering_preset"], "")
+        self.assertEqual(config["presets"], [])
         self.assertIs(config["keep_artifacts"], False)
         self.assertIs(config["keep_video"], False)
 
@@ -71,6 +74,127 @@ class ParseConfigTest(unittest.TestCase):
     def test_malformed_toml_is_a_config_error_not_a_traceback(self):
         with self.assertRaises(pc.ConfigError):
             pc.parse_config("language = ")
+
+
+TWO_PRESETS = '''\
+[[presets]]
+name = "ML researcher"
+text = "Skip the background."
+
+[[presets]]
+name = "Teach me"
+text = """Build it up from the problem.
+Define the terms as they arrive."""
+'''
+
+
+class SteeringPresetTest(unittest.TestCase):
+    """#11: the presets are validated as hard as the flat keys.
+
+    The panel sends whatever it finds here, so a preset that came out wrong is an
+    Episode generated with the wrong Steering — or with none.
+    """
+
+    def test_a_fresh_box_has_no_presets_and_nothing_loaded(self):
+        config = pc.parse_config("")
+        self.assertEqual(config["presets"], [])
+        self.assertEqual(config["steering_preset"], "")
+
+    def test_presets_come_back_as_name_and_text_in_file_order(self):
+        presets = pc.parse_config(TWO_PRESETS)["presets"]
+        self.assertEqual([preset["name"] for preset in presets], ["ML researcher", "Teach me"])
+        self.assertEqual(presets[0]["text"], "Skip the background.")
+
+    def test_a_multi_line_text_keeps_its_newlines(self):
+        presets = pc.parse_config(TWO_PRESETS)["presets"]
+        self.assertEqual(
+            presets[1]["text"], "Build it up from the problem.\nDefine the terms as they arrive."
+        )
+
+    def test_a_preset_with_no_text_is_a_preset_with_no_steering(self):
+        self.assertEqual(pc.parse_config('[[presets]]\nname = "Blank"')["presets"], [{"name": "Blank", "text": ""}])
+
+    def test_an_entry_without_a_name_fails_loudly(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config('[[presets]]\ntext = "Skip the background."')
+        self.assertIn("presets[0]", str(caught.exception))
+
+    def test_an_empty_name_is_rejected_because_nothing_could_ask_for_it(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config('[[presets]]\nname = ""')
+        self.assertIn("presets[0]", str(caught.exception))
+
+    def test_a_typo_inside_a_preset_names_the_entry_and_the_key(self):
+        # `txet` would otherwise be a preset that silently steers nothing.
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config('[[presets]]\nname = "ML researcher"\ntxet = "Skip the background."')
+        message = str(caught.exception)
+        self.assertIn("presets[0]", message)
+        self.assertIn("txet", message)
+
+    def test_a_name_of_the_wrong_type_is_rejected(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config("[[presets]]\nname = 7")
+        self.assertIn("presets[0].name", str(caught.exception))
+
+    def test_a_text_of_the_wrong_type_is_rejected(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config('[[presets]]\nname = "ML researcher"\ntext = true')
+        self.assertIn("presets[0].text", str(caught.exception))
+
+    def test_two_presets_may_not_share_a_name(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config('[[presets]]\nname = "Skim it"\n\n[[presets]]\nname = "Skim it"')
+        self.assertIn("Skim it", str(caught.exception))
+
+    def test_presets_written_as_something_other_than_a_list_is_rejected(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config('presets = "ML researcher"')
+        self.assertIn("presets", str(caught.exception))
+
+    def test_steering_preset_names_the_one_the_focus_came_from(self):
+        config = pc.parse_config(f'steering_preset = "Teach me"\n{TWO_PRESETS}')
+        self.assertEqual(config["steering_preset"], "Teach me")
+
+    def test_a_steering_preset_naming_no_preset_is_a_hard_error(self):
+        # The panel and the CLI have to agree on which preset is loaded.
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config(f'steering_preset = "ML reseacher"\n{TWO_PRESETS}')
+        message = str(caught.exception)
+        self.assertIn("steering_preset", message)
+        self.assertIn("ML reseacher", message)
+
+    def test_presets_with_none_of_them_loaded_is_a_valid_config(self):
+        self.assertEqual(pc.parse_config(TWO_PRESETS)["steering_preset"], "")
+
+    def test_a_steering_text_is_not_length_capped(self):
+        # #11: the 500-character limit is a maxlength on Google's textarea; a
+        # 1,313-character Steering was measured through to the episode.
+        long_text = "word " * 500
+        config = pc.parse_config(f'[[presets]]\nname = "Long"\ntext = "{long_text}"')
+        self.assertEqual(config["presets"][0]["text"], long_text)
+
+
+class Utf8Test(unittest.TestCase):
+    """Prose that arrived through a session with no locale set, put back together."""
+
+    HIDDEN = "Schrödinger — précis.".encode().decode("ascii", "surrogateescape")
+
+    def ascii_locale(self):
+        return mock.patch.object(pc.sys, "getfilesystemencoding", lambda: "ascii")
+
+    def test_bytes_hidden_in_surrogates_are_read_as_the_utf_8_they_are(self):
+        self.assertNotEqual(self.HIDDEN, "Schrödinger — précis.")
+        with self.ascii_locale():
+            self.assertEqual(pc.utf8(self.HIDDEN), "Schrödinger — précis.")
+
+    def test_text_hiding_nothing_is_returned_as_it_stands(self):
+        # Including the case the locale could not have produced — a stdin the
+        # environment named UTF-8 under an ASCII filesystem encoding — which must
+        # be handed back rather than raising on the way through.
+        with self.ascii_locale():
+            self.assertEqual(pc.utf8("Schrödinger"), "Schrödinger")
+        self.assertEqual(pc.utf8("plain ASCII"), "plain ASCII")
 
 
 class SlugTest(unittest.TestCase):
@@ -174,6 +298,33 @@ class ResolveTitleTest(unittest.TestCase):
         self.assertEqual(
             pc.resolve_title("  Spaced  Out  ", PDFINFO_WITHOUT_TITLE, Path("/tmp/p.pdf")),
             "Spaced Out",
+        )
+
+    def test_a_combined_jobs_empty_title_falls_back_to_the_first_papers_metadata(self):
+        # #18: the panel's field was empty, so the runner falls back the way a
+        # single-paper Job always has — but says how many more are behind it.
+        self.assertEqual(
+            pc.resolve_title(None, PDFINFO_WITH_TITLE, Path("/tmp/paper.pdf"), extra=2),
+            "Attention Is All You Need + 2 more",
+        )
+
+    def test_the_fallback_count_also_applies_to_the_filename_stem(self):
+        self.assertEqual(
+            pc.resolve_title(None, PDFINFO_WITHOUT_TITLE, Path("/tmp/1706.03762v7.pdf"), extra=1),
+            "1706.03762v7 + 1 more",
+        )
+
+    def test_an_override_is_never_decorated_with_the_extra_count(self):
+        # A non-empty title may already be the panel's own "+N more" text (#15);
+        # decorating it again here would double it up.
+        self.assertEqual(
+            pc.resolve_title("Mine", PDFINFO_WITH_TITLE, Path("/tmp/paper.pdf"), extra=2), "Mine"
+        )
+
+    def test_a_single_source_job_is_not_decorated_since_extra_defaults_to_zero(self):
+        self.assertEqual(
+            pc.resolve_title(None, PDFINFO_WITH_TITLE, Path("/tmp/paper.pdf")),
+            "Attention Is All You Need",
         )
 
 
@@ -302,10 +453,10 @@ class ArtifactStatusTest(unittest.TestCase):
 class EpisodeDescriptionTest(unittest.TestCase):
     """#6 bounded the description mechanically and deferred its content to this ticket."""
 
-    def describe(self, **overrides):
+    def describe(self, pdfs=None, **overrides):
         return pc.episode_description(
             "Attention Is All You Need",
-            Path("/papers/1706.03762v7.pdf"),
+            pdfs if pdfs is not None else [Path("/papers/1706.03762v7.pdf")],
             pc.parse_config("") | overrides,
         )
 
@@ -316,6 +467,7 @@ class EpisodeDescriptionTest(unittest.TestCase):
         description = self.describe()
         self.assertIn("1706.03762v7.pdf", description)
         self.assertNotIn("/papers/", description)
+        self.assertIn("Source: 1706.03762v7.pdf", description)
 
     def test_records_the_settings_the_overview_was_generated_with(self):
         description = self.describe(format="debate", length="long", language="pt-BR")
@@ -334,6 +486,26 @@ class EpisodeDescriptionTest(unittest.TestCase):
     def test_holds_nothing_youtube_would_reject(self):
         description = self.describe()
         self.assertEqual(ya.sanitize_description(description), description)
+
+    def test_a_combined_episode_lists_every_source(self):
+        # #18: three Sources in one Job means one Episode discussing all three,
+        # and the description is where a viewer can tell what those three were.
+        description = self.describe(pdfs=[
+            Path("/papers/attention.pdf"),
+            Path("/papers/bert.pdf"),
+            Path("/papers/gpt.pdf"),
+        ])
+        self.assertIn("Sources:", description)
+        self.assertNotIn("Source:", description)
+        for name in ("attention.pdf", "bert.pdf", "gpt.pdf"):
+            self.assertIn(name, description)
+
+    def test_a_combined_episode_says_papers_are_the_source_of_truth_plural(self):
+        description = self.describe(pdfs=[Path("/papers/a.pdf"), Path("/papers/b.pdf")])
+        self.assertIn("papers are the source", description)
+
+    def test_a_single_source_still_reads_as_one_paper(self):
+        self.assertIn("paper is the source", self.describe())
 
     def test_the_title_also_survives_youtube_as_it_stands(self):
         self.assertEqual(ya.sanitize_title("Attention Is All You Need"), "Attention Is All You Need")

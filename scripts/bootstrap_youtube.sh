@@ -202,6 +202,12 @@ HOME_URL="$(printf '%s' "$REMOTE_URL" | sed -E 's#^git@([^:]+):#https://\1/#; s#
 # The policy has to be on the default branch, which is what Google will fetch.
 PRIVACY_URL="$HOME_URL/blob/main/PRIVACY.md"
 AUTHORIZED_DOMAIN="$(printf '%s' "$HOME_URL" | awk -F/ '{print $3}')"
+
+# Where paper-cast's own policy lives. Stage 4 falls back to it for anybody
+# running this out of a plugin checkout, which is a clone of somebody else's
+# repo and cannot publish a policy of its own (#12).
+UPSTREAM_HOME_URL="https://github.com/TiagoVello/paper-cast"
+UPSTREAM_PRIVACY_URL="$UPSTREAM_HOME_URL/blob/main/PRIVACY.md"
 SUMMARY_FILE="$CONFIG_DIR/bootstrap-summary.md"
 
 # Re-run memory lives with the other per-machine config, not in the repo.
@@ -221,11 +227,40 @@ copy() {
 # live URL: true when the URL answers 200, i.e. Google will be able to fetch it.
 live() { curl -fsL -o /dev/null --max-time 20 "$1"; }
 
+# pushable: this checkout has an origin we could push to, and something to push.
+# A plugin installed by `omarchy plugin add` is a clone of somebody else's repo,
+# so the push offer in stage 4 has to disappear for everyone but its author.
+pushable() {
+  local branch
+  git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  git -C "$REPO" remote get-url --push origin >/dev/null 2>&1 || return 1
+  branch=$(git -C "$REPO" symbolic-ref --quiet --short HEAD) || return 1
+  git -C "$REPO" rev-parse --quiet --verify "origin/$branch" >/dev/null 2>&1 || return 1
+  [[ -n "$(git -C "$REPO" log --oneline "origin/$branch..$branch" 2>/dev/null)" ]]
+}
+
+# Every program the ten stages need, checked before the first of them rather
+# than at stage 9: a quarter of an hour of console work should not end on a
+# missing ffmpeg. `paper-cast setup` runs this after installing them (#12).
+MISSING=""
+for _tool in python3 curl ffmpeg awk sed stat mktemp; do
+  command -v "$_tool" >/dev/null 2>&1 || MISSING="$MISSING $_tool"
+done
+if [[ -n "$MISSING" ]]; then
+  printf 'bootstrap_youtube.sh: not on PATH:%s\n' "$MISSING" >&2
+  printf 'Run `paper-cast setup`, which installs them, and it will come back here.\n' >&2
+  exit 1
+fi
+
 banner "paper-cast: YouTube OAuth bootstrap"
 
 # ── 1 ─────────────────────────────────────────────────────────────────────
 stage "Create the GCP project"
 say "Every OAuth client belongs to a project. One project, used forever."
+say "You do not need an existing project, and you do not need billing: the"
+say "YouTube Data API's free quota covers this and no card is asked for."
+note "First time in the Cloud console? It asks you to accept the terms and"
+note "pick a country before it shows you anything. That is the only gate."
 open_url "https://console.cloud.google.com/projectcreate"
 step "Name it something you will recognise, e.g. paper-cast."
 step "Click CREATE, wait for the notification, then open the project."
@@ -274,20 +309,31 @@ say ""
 if ! live "$PRIVACY_URL"; then
   warn "The privacy policy is not reachable yet:"
   note "  $PRIVACY_URL"
-  say "It is committed locally but not pushed, so Google cannot see it."
-  if confirm "Push it to GitHub now (git push origin main)?"; then
-    if git -C "$REPO" push origin main; then
-      printf '  %s✓ pushed%s\n' "$GREEN" "$RESET"
-    else
-      warn "Push failed; push it yourself, then re-run this wizard."
-      exit 1
+  if pushable; then
+    say "It is committed locally but not pushed, so Google cannot see it."
+    if confirm "Push it to GitHub now (git push origin main)?"; then
+      git -C "$REPO" push origin main &&
+        printf '  %s✓ pushed%s\n' "$GREEN" "$RESET" ||
+        warn "Push failed; the fallback below works just as well."
     fi
+  else
+    say "This checkout has nothing to push, or no rights to push it — which is"
+    say "the normal case: a plugin checkout is a clone of somebody else's repo."
   fi
   if live "$PRIVACY_URL"; then
     printf '  %s✓ privacy policy is live%s\n' "$GREEN" "$RESET"
+  elif live "$UPSTREAM_PRIVACY_URL"; then
+    # The policy describes what paper-cast does with your data, and that is the
+    # same program whoever is running it, so the upstream copy is the right one
+    # to point a consent screen at when your own fork has no published copy.
+    HOME_URL="$UPSTREAM_HOME_URL"
+    PRIVACY_URL="$UPSTREAM_PRIVACY_URL"
+    AUTHORIZED_DOMAIN="$(printf '%s' "$HOME_URL" | awk -F/ '{print $3}')"
+    printf '  %s✓ using paper-cast'"'"'s own published policy%s\n' "$GREEN" "$RESET"
+    note "  $PRIVACY_URL"
   else
-    warn "Still not reachable. Google will reject the URL."
-    SKIPPED+=("publish PRIVACY.md at $PRIVACY_URL")
+    warn "No reachable privacy policy. Google will reject the URL."
+    SKIPPED+=("publish PRIVACY.md somewhere Google can fetch it")
   fi
 else
   printf '  %s✓ privacy policy is live%s\n' "$GREEN" "$RESET"
@@ -423,6 +469,30 @@ stage "Prove a private upload"
 say "A throwaway 5-second clip, uploaded private, to show the chain works"
 say "before any of the pipeline depends on it."
 say ""
+
+# The one stage that is not idempotent: it puts a real video on the channel
+# every time, against a budget of 100 videos.insert calls a day. A re-run that
+# stopped in stage 10 should not spend a second one (#12).
+PROVEN=$(_existing TEST_VIDEO_ID || true)
+VIDEO_ID="$PROVEN"
+if [[ -n "$PROVEN" ]]; then
+  say "A previous run already uploaded $PROVEN from this machine, so the"
+  say "credential is proven. Uploading again spends another of the day's 100."
+  say ""
+  if confirm "Upload a second test video anyway?"; then
+    VIDEO_ID=""
+  else
+    say "Checking the stored credential instead..."
+    if python3 "$SCRIPT_DIR/youtube_auth.py" refresh >/dev/null; then
+      printf '  %s✓ the credential still works%s\n' "$GREEN" "$RESET"
+    else
+      warn "The stored token no longer refreshes; re-run stage 8 by hand."
+      SKIPPED+=("re-authorise: python3 $SCRIPT_DIR/youtube_auth.py authorize")
+    fi
+  fi
+fi
+
+if [[ -z "$VIDEO_ID" ]]; then
 step "Building the clip with ffmpeg..."
 ffmpeg -y -loglevel error \
   -f lavfi -i color=c=0x1d2021:s=1280x720 \
@@ -449,6 +519,7 @@ else
   SKIPPED+=("prove a private upload: python3 $SCRIPT_DIR/youtube_auth.py upload $CLIP")
   VIDEO_ID=""
 fi
+fi  # end of the upload, skipped when an earlier run already proved the credential
 
 # ── 10 ────────────────────────────────────────────────────────────────────
 stage "Write down what was configured"
