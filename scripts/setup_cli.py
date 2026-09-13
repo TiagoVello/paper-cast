@@ -385,6 +385,8 @@ def wrapper_is_current(path: Path = WRAPPER, entry_point: Path = ENTRY_POINT) ->
     moved — reads as not current and is rewritten, which is the whole reason this
     compares contents instead of just calling `path.exists()`.
     """
+    if path.is_symlink():
+        return False
     try:
         return path.read_text() == wrapper_text(entry_point)
     except (OSError, UnicodeDecodeError):
@@ -393,7 +395,16 @@ def wrapper_is_current(path: Path = WRAPPER, entry_point: Path = ENTRY_POINT) ->
 
 
 def is_ours(path: Path = WRAPPER) -> bool:
-    """Whether we wrote this file, whatever checkout it points at."""
+    """Whether we wrote this file, whatever checkout it points at.
+
+    A symlink is never ours — Setup writes a real file — and the question has to
+    be answered about the path itself rather than about whatever it points at.
+    Reading through one is how Setup came to overwrite a working checkout's
+    `paper_cast.py`: the target held Python, so it read as "not ours", and the
+    write that followed went straight down the symlink.
+    """
+    if path.is_symlink():
+        return False
     try:
         return WRAPPER_MARKER in path.read_text()
     except (OSError, UnicodeDecodeError):
@@ -413,13 +424,27 @@ def step_wrapper(prompt: Prompt) -> str:
         note(f"{WRAPPER} already runs {ENTRY_POINT}.")
         return check_bin_on_path(SATISFIED)
 
-    if WRAPPER.exists() and not is_ours(WRAPPER):
-        warn(f"{WRAPPER} exists and was not written by paper-cast.")
-        if not prompt.confirm(f"Overwrite {WRAPPER}?"):
+    # lexists, not exists: a symlink pointing nowhere is still something of
+    # someone's sitting on this path, and `exists()` calls it absent.
+    if os.path.lexists(WRAPPER) and not is_ours(WRAPPER):
+        if WRAPPER.is_symlink():
+            # Say what it actually is. "Overwrite?" about a symlink is a
+            # different question than about a file, and the honest version names
+            # the file that would have been destroyed by answering it carelessly.
+            warn(f"{WRAPPER} is a symlink to {os.readlink(WRAPPER)}, not written by paper-cast.")
+            warn("Replacing it replaces the link. What it points at is left alone.")
+        else:
+            warn(f"{WRAPPER} exists and was not written by paper-cast.")
+        if not prompt.confirm(f"Replace {WRAPPER}?"):
             warn("skipped: the wrapper. The panel runs `paper-cast`, so it needs one on PATH.")
             return OUTSTANDING
 
     BIN_DIR.mkdir(parents=True, exist_ok=True)
+    # Unlink before writing, always. `write_text` on a symlink follows it and
+    # writes the file at the far end; replacing a path has to mean replacing
+    # that path (#12).
+    if os.path.lexists(WRAPPER):
+        WRAPPER.unlink()
     WRAPPER.write_text(wrapper_text(ENTRY_POINT))
     WRAPPER.chmod(0o755)
     note(f"Wrote {WRAPPER} → {ENTRY_POINT}")
@@ -635,7 +660,7 @@ def uninstall_command(args: argparse.Namespace) -> int:
     """
     prompt = Prompt(assume_yes=args.assume_yes)
 
-    if not WRAPPER.exists():
+    if not os.path.lexists(WRAPPER):
         note(f"No {WRAPPER} to remove.")
     elif not is_ours(WRAPPER):
         warn(f"{WRAPPER} was not written by paper-cast setup, so it is being left alone.")
