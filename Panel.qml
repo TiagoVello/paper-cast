@@ -379,6 +379,22 @@ Item {
     return names.join(", ")
   }
 
+  // `Date.now()` is not a property, so a binding that reads it has nothing to
+  // re-evaluate on: the elapsed label moved only when the Job file happened to
+  // change, and during a five-minute `generating` it never does — it froze a
+  // few seconds in. Ticking a real property gives the binding a dependency.
+  property real nowMs: Date.now()
+
+  Timer {
+    interval: 1000
+    // Only while a human is watching and something is actually running: this
+    // panel's widget is alive for the whole session (#14).
+    running: root.opened && (root.queue ? root.queue.activeCount : 0) > 0
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.nowMs = Date.now()
+  }
+
   function elapsedLabel(job) {
     // `started_at` survives a retry until the runner actually picks the Job
     // back up (#13's queue_cli.retry_command only flips `stage`), so a
@@ -390,7 +406,7 @@ Item {
     if (!startedRaw) return ""
     var started = Date.parse(startedRaw)
     if (isNaN(started)) return ""
-    var seconds = Math.max(0, Math.round((Date.now() - started) / 1000))
+    var seconds = Math.max(0, Math.round((root.nowMs - started) / 1000))
     var minutes = Math.floor(seconds / 60)
     return minutes > 0 ? (minutes + "m " + (seconds % 60) + "s") : (seconds + "s")
   }
