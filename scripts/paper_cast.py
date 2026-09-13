@@ -605,4 +605,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # A subcommand module imports `paper_cast` by name for DEFAULTS and ConfigError.
+    # Run as a script this module is `__main__`, so without this line that import
+    # would load a second copy of it, and the ConfigError a subcommand raised would
+    # be a different class from the one main() catches — a traceback, not a message.
+    sys.modules.setdefault("paper_cast", sys.modules[__name__])
     raise SystemExit(main())
