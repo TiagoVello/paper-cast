@@ -92,6 +92,21 @@ A Job takes about five minutes, nearly all of it NotebookLM generating. The
 artifacts land in a Run directory named after the Episode, and a failed Job keeps
 everything it made.
 
+An arXiv paper needs no download of your own — paste the id or the link:
+
+```bash
+paper-cast queue add arxiv.org/abs/1706.03762
+paper-cast queue add 2401.12345 cs.CL/0301001 --combine
+paper-cast resolve arxiv.org/abs/1706.03762   # what a reference names, as JSON
+```
+
+Both id schemes, `/abs/` and `/pdf/` links with or without a version, and a
+direct link to a `.pdf` anywhere. A DOI or a publisher's landing page is refused
+rather than guessed at. A reference that names nothing fails when you add it, not
+five minutes into the run. The PDF is fetched when the Job starts and lands in
+the Run directory beside the Episode it produced, and arXiv's title is the one
+used — most PDFs on arXiv carry no title of their own.
+
 ## Steering
 
 Setup writes five presets — *ML researcher*, *Skim it*, *Critical read*, *Teach
