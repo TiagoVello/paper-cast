@@ -152,17 +152,29 @@ Panel {
 
   // #16 adds a DropArea here, as a sibling filling the root: Qt delivers drops
   // through ItemAcceptsDrops, a path separate from mouse hit-testing, so the
-  // button's own MouseArea above does not swallow them.
+  // button's own MouseArea above does not swallow them. Its onDropped handler
+  // calls stageDroppedPaths() below — a drop stages Sources and opens the
+  // panel, and must never fire a Job (#10): the Steering is the decision a
+  // drop must not skip.
+
+  // The named seam #16 calls: stage a list of paths (plain paths or `file://`
+  // URLs — Panel.qml.stagePaths() accepts either) and open the panel to them,
+  // without queuing anything.
+  function stageDroppedPaths(paths) {
+    if (panelLoader.item && typeof panelLoader.item.stagePaths === "function")
+      panelLoader.item.stagePaths(paths)
+    root.open()
+  }
 
   // ---------------------------------------------------------------------
   // The panel is #15's
   // ---------------------------------------------------------------------
 
-  // The seam: #15 adds Panel.qml beside this file and points `panelSource` at
-  // it. The loaded item is handed what it needs the way the bar hands this
-  // widget what it needs — by name, after load, guarded — because injected
-  // properties arrive after Component.onCompleted and the bar injects twice.
-  readonly property url panelSource: ""
+  // #15's dropdown. The loaded item is handed what it needs the way the bar
+  // hands this widget what it needs — by name, after load, guarded — because
+  // injected properties arrive after Component.onCompleted and the bar
+  // injects twice.
+  readonly property url panelSource: Qt.resolvedUrl("Panel.qml")
 
   function injectPanel() {
     var target = panelLoader.item
