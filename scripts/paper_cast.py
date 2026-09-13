@@ -57,6 +57,19 @@ GENERATION_TIMEOUT = 15 * 60  # ~3x the observed run, and the only failure detec
 DOWNLOAD_WINDOW = 120  # #2: `completed` 404s for ~35s before the media URL works.
 DOWNLOAD_RETRY_INTERVAL = 5
 
+# The stages a Job moves through, in order (#13). `run_pipeline` notes each one as
+# it reaches it, and the runner writes that into the Job file — which is what lets
+# the panel read a run without watching the process. `done` and `failed` are ends.
+STAGE_QUEUED = "queued"
+STAGE_GENERATING = "generating"
+STAGE_MUXING = "muxing"
+STAGE_UPLOADING = "uploading"
+STAGE_DONE = "done"
+STAGE_FAILED = "failed"
+STAGES = (STAGE_QUEUED, STAGE_GENERATING, STAGE_MUXING, STAGE_UPLOADING, STAGE_DONE, STAGE_FAILED)
+# The three a Job can be in while something is actually working on it.
+RUNNING_STAGES = (STAGE_GENERATING, STAGE_MUXING, STAGE_UPLOADING)
+
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_UNKNOWN = "unknown"
@@ -481,8 +494,33 @@ def tidy_up(run: RunPaths, config: dict[str, Any]) -> None:
         run.dir.rmdir()
 
 
-def run_pipeline(pdf: Path, title_override: str | None, config: dict[str, Any], dry_run: bool) -> int:
-    if not pdf.is_file():
+def run_pipeline(
+    pdf: Path,
+    title_override: str | None,
+    config: dict[str, Any],
+    dry_run: bool,
+    *,
+    note: Any = None,
+    resume_from: str | None = None,
+) -> int:
+    """Paper in, episode up. Optionally reporting where it is, and skipping what is done.
+
+    `note` is handed a dict of facts about the run as they become true — the stage
+    it has reached, the run directory, the title, the episode's URL. The Queue
+    passes one that writes them into the Job file (#13); a bare `paper-cast cast`
+    passes none, and nothing is recorded anywhere but the terminal.
+
+    `resume_from` is a stage to pick up at, for a retry that must not repeat work
+    that succeeded: an upload that failed re-uploads the `.mp4` on disk without
+    going near NotebookLM, which is the whole point of it. The caller is the one
+    that checked the artifacts are still there — see `queue_cli.resume_stage`.
+    """
+    note = note or (lambda facts: None)
+    resume_from = resume_from or STAGE_GENERATING
+    # Only a run that starts at the beginning needs the paper itself. One resuming
+    # at the mux has the cover and the audio; one resuming at the upload has the
+    # `.mp4`, and a paper filed away since must not be what stops it going up.
+    if resume_from == STAGE_GENERATING and not pdf.is_file():
         raise PipelineError(f"no such file: {pdf}")
     missing = missing_tools()
     if missing:
@@ -490,31 +528,41 @@ def run_pipeline(pdf: Path, title_override: str | None, config: dict[str, Any], 
 
     # Both credentials are checked before the PDF is touched: failing here costs
     # seconds, failing after generation costs a five-minute cycle.
-    say("Refreshing the NotebookLM session")
-    try:
-        run_step("nlm auth refresh", ["nlm", "auth", "refresh"])
-    except PipelineError as err:
-        raise PipelineError(f"{err}\n\nRun `nlm login` in a visible browser and sign in again.") from None
+    if resume_from == STAGE_GENERATING:
+        say("Refreshing the NotebookLM session")
+        try:
+            run_step("nlm auth refresh", ["nlm", "auth", "refresh"])
+        except PipelineError as err:
+            raise PipelineError(f"{err}\n\nRun `nlm login` in a visible browser and sign in again.") from None
     if not dry_run:
         youtube_auth.check_credential()
 
-    title = resolve_title(title_override, run_step("pdfinfo", ["pdfinfo", str(pdf)]), pdf)
+    # `pdfinfo` is asked only when its answer can still change the outcome: an
+    # explicit title beats it anyway, and a retry passes back the title the first
+    # attempt resolved, so the run directory comes out at the same name either way.
+    metadata = "" if title_override else run_step("pdfinfo", ["pdfinfo", str(pdf)])
+    title = resolve_title(title_override, metadata, pdf)
     run = RunPaths(config["output_dir"] / run_slug(title, pdf))
     run.dir.mkdir(parents=True, exist_ok=True)
     say(f"{title}\n  {run.dir}")
+    note({"stage": resume_from, "title": title, "run_dir": str(run.dir)})
 
     try:
-        say("Rendering the cover from page 1")
-        run_step("pdftoppm", cover_command(pdf, run.cover_prefix))
-        generate_episode(pdf, title, config, run)
+        if resume_from == STAGE_GENERATING:
+            say("Rendering the cover from page 1")
+            run_step("pdftoppm", cover_command(pdf, run.cover_prefix))
+            generate_episode(pdf, title, config, run)
 
-        say("Muxing the video")
-        run_step("ffmpeg", ffmpeg_command(run.cover, run.audio, run.video))
+        if resume_from in (STAGE_GENERATING, STAGE_MUXING):
+            note({"stage": STAGE_MUXING})
+            say("Muxing the video")
+            run_step("ffmpeg", ffmpeg_command(run.cover, run.audio, run.video))
 
         if dry_run:
             say(f"Dry run: stopping before the upload.\n  {run.video}")
             return 0
 
+        note({"stage": STAGE_UPLOADING})
         say("Uploading, private")
         video = youtube_auth.upload_private(run.video, title, episode_description(title, pdf, config))
     except (*RUN_ERRORS, KeyboardInterrupt):
@@ -524,7 +572,9 @@ def run_pipeline(pdf: Path, title_override: str | None, config: dict[str, Any], 
 
     # The link first: a tidy-up that fails must not bury where the episode went.
     video_id = video.get("id", "?")
-    say(f"https://studio.youtube.com/video/{video_id}/edit")
+    url = f"https://studio.youtube.com/video/{video_id}/edit"
+    say(url)
+    note({"video_url": url})
     tidy_up(run, config)
     return 0
 
