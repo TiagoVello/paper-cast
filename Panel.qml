@@ -174,6 +174,12 @@ Item {
   property string combinedTitle: ""
   property string arxivError: ""
   property string queueError: ""
+  // Set by stagePaths() when a drop (#16) was refused for containing
+  // something that isn't a PDF. Cleared when the panel closes (folded into
+  // the single onOpenedChanged below — QML only allows one per property),
+  // so a stale refusal from a previous drop doesn't reappear on the next
+  // open.
+  property string dropError: ""
 
   readonly property string defaultCombinedTitle: {
     if (root.staged.length === 0) return ""
@@ -189,19 +195,40 @@ Item {
 
   // The named seam #16 calls (via BarWidget.stageDroppedPaths): stage a list
   // of paths, either plain filesystem paths or `file://` URLs (what a
-  // Wayland drop hands over), without firing a Job.
+  // Wayland drop hands over), without firing a Job. This is also what
+  // "Choose PDFs…" below calls once `omarchy-file-select` returns, so there
+  // is one staging path, not two.
+  //
+  // A drop is refused *whole*, not filtered down to the good ones, when
+  // anything in it isn't a PDF (#16) — partial acceptance is how a third
+  // paper quietly goes missing and nobody notices until later. Judged by
+  // extension, case-insensitively: that's exactly what the file picker
+  // above already relies on (`omarchy-file-select --extensions pdf` asks
+  // the portal for a name, not a magic-byte sniff), so drag-and-drop and
+  // the button agree on what counts instead of quietly disagreeing.
   function stagePaths(paths) {
-    var added = []
+    var resolved = []
     for (var i = 0; i < paths.length; i++) {
       var raw = String(paths[i])
       var path = raw.indexOf("file://") === 0
         ? decodeURIComponent(raw.replace(/^file:\/\//, ""))
         : raw
-      if (path === "") continue
-      added.push({ kind: "pdf", path: path, title: root.basename(path) })
+      if (path !== "") resolved.push(path)
     }
-    if (added.length === 0) return
-    root.staged = root.staged.concat(added)
+    if (resolved.length === 0) return
+
+    var notPdf = resolved.filter(function(p) { return !/\.pdf$/i.test(p) })
+    if (notPdf.length > 0) {
+      root.dropError = resolved.length === 1
+        ? ("Only PDFs can be staged — “" + root.basename(resolved[0]) + "” wasn't.")
+        : ("Only PDFs can be staged — nothing was, because of " + notPdf.map(root.basename).join(", ") + ".")
+      return
+    }
+
+    root.dropError = ""
+    root.staged = root.staged.concat(resolved.map(function(path) {
+      return { kind: "pdf", path: path, title: root.basename(path) }
+    }))
   }
 
   function unstage(index) {
@@ -445,7 +472,12 @@ Item {
   }
 
   onOpenedChanged: {
-    if (!root.opened) return
+    if (!root.opened) {
+      // A refused drop (#16) has been seen once the panel is dismissed;
+      // don't let it reappear stale on the next open.
+      root.dropError = ""
+      return
+    }
     if (root.installed) root.refreshConfig()
     Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
   }
@@ -614,6 +646,18 @@ Item {
                 font.pixelSize: Style.font.caption
                 font.letterSpacing: 1
                 color: root.muted
+              }
+
+              // A refused drop (#16) says why here — the first thing this
+              // column shows, since the drop that caused it is what opened
+              // the panel in the first place.
+              Text {
+                visible: root.dropError !== ""
+                width: parent.width
+                wrapMode: Text.Wrap
+                color: root.urgent
+                font.pixelSize: Style.font.caption
+                text: root.dropError
               }
 
               Button {
