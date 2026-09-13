@@ -150,12 +150,67 @@ Panel {
     onOpacityChanged: if (!root.breathing) opacity = 1
   }
 
-  // #16 adds a DropArea here, as a sibling filling the root: Qt delivers drops
-  // through ItemAcceptsDrops, a path separate from mouse hit-testing, so the
-  // button's own MouseArea above does not swallow them. Its onDropped handler
-  // calls stageDroppedPaths() below — a drop stages Sources and opens the
-  // panel, and must never fire a Job (#10): the Steering is the decision a
-  // drop must not skip.
+  // ---------------------------------------------------------------------
+  // The drop target (#16)
+  // ---------------------------------------------------------------------
+
+  // Whether a drag is currently hovering the icon — the only state the drop
+  // target itself owns; what counts as a valid drop lives in Panel.qml's
+  // stagePaths(), one function shared with the "Choose PDFs…" picker.
+  property bool hoveredByDrag: false
+
+  // A sibling of `button`, filling the same root Item: Qt delivers drops
+  // through ItemAcceptsDrops, a path separate from mouse hit-testing, so
+  // button's own MouseArea (which sits on top for clicks) never swallows one
+  // (variant-b-and-dnd.md).
+  DropArea {
+    id: dropArea
+
+    // The reserved icon slot (Style.bar.iconSlot, 27px) is already this
+    // widget's whole footprint, but a ~27px glyph is a precision target in
+    // daily use even though it lands fine in a test (#10's open "Fog").
+    // Grow the *drop* target past the *click* target: Style.spacing.lg (8px)
+    // of extra reach on each side, horizontally only. There's no vertical
+    // room to spare — the bar's own height is fixed and this Item already
+    // fills it — but the gap between bar modules leaves room to spare
+    // sideways, so a few extra px of reach here doesn't cost anything.
+    anchors.fill: parent
+    anchors.leftMargin: -Style.spacing.lg
+    anchors.rightMargin: -Style.spacing.lg
+
+    onEntered: function(drag) {
+      root.hoveredByDrag = true
+      // Accept broadly here and filter in onDropped, once we actually know
+      // what was offered: declining in onEntered stops the compositor
+      // sending onPositionChanged/onDropped at all (variant-b-and-dnd.md).
+      drag.accepted = true
+    }
+
+    onExited: { root.hoveredByDrag = false }
+
+    onDropped: function(drop) {
+      root.hoveredByDrag = false
+      var urls = drop.hasUrls ? drop.urls : []
+      // Finishes the wl_data_device handshake regardless of what we do with
+      // the paths next — refusing to *stage* a non-PDF is a decision made
+      // one layer up, not a reason to leave the drag hanging.
+      drop.accept(Qt.CopyAction)
+      if (urls.length > 0) root.stageDroppedPaths(urls)
+    }
+  }
+
+  // The only feedback a drag-hover gets, within the no-text rule (#10):
+  // colour and the bar's existing motion vocabulary — a fade, the same way
+  // the breath above is the icon's only allowed motion — never a hard cut.
+  Rectangle {
+    anchors.fill: parent
+    color: "transparent"
+    radius: Style.cornerRadius
+    border.width: 2
+    border.color: Color.accent
+    opacity: root.hoveredByDrag ? 1 : 0
+    Behavior on opacity { NumberAnimation { duration: 120 } }
+  }
 
   // The named seam #16 calls: stage a list of paths (plain paths or `file://`
   // URLs — Panel.qml.stagePaths() accepts either) and open the panel to them,
