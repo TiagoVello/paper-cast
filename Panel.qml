@@ -831,21 +831,27 @@ Item {
                 color: "transparent"
                 border.width: 1
                 border.color: steeringEditor.activeFocus ? root.accent : root.faint
+                clip: true
 
-                QC.TextArea {
-                  id: steeringEditor
+                QC.ScrollView {
                   anchors.fill: parent
                   anchors.margins: Style.spacing.sm
-                  background: null
-                  wrapMode: TextEdit.Wrap
-                  selectByMouse: true
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  color: root.fg
-                  // No character limit and no counter (#15): the 500 cap on
-                  // Google's own Customize box is the textarea's, not a rule
-                  // this editor reimplements.
-                  onTextChanged: if (root.steering !== text) root.steering = text
+                  clip: true
+
+                  QC.TextArea {
+                    id: steeringEditor
+                    width: parent.width
+                    background: null
+                    wrapMode: TextEdit.Wrap
+                    selectByMouse: true
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    color: root.fg
+                    // No character limit and no counter (#15): the 500 cap on
+                    // Google's own Customize box is the textarea's, not a rule
+                    // this editor reimplements.
+                    onTextChanged: if (root.steering !== text) root.steering = text
+                  }
                 }
               }
 
