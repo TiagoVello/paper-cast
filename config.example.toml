@@ -79,11 +79,11 @@ keep_artifacts = false
 keep_video = false
 
 # Steering presets: named, pre-written Steerings, flipped through on the panel's
-# carousel rather than retyped. Setup writes a starter set — ML researcher, Skim
-# it, Critical read, Teach me, Adjacent field — into your own config file rather
-# than paper-cast keeping a hidden fallback, because the whole point is that
-# editing one sticks. Delete them all if none of them is you; an empty list is a
-# valid config, it only leaves the carousel empty.
+# carousel rather than retyped. None by default — Setup writes a starter set (ML
+# researcher, Skim it, Critical read, Teach me, Adjacent field) into your own
+# config file rather than paper-cast keeping a hidden fallback, because the whole
+# point is that editing one sticks. Delete them all if none of them is you; no
+# presets is a valid config, it only leaves the carousel empty.
 #
 # A preset is a name and the Steering text, and nothing else: no per-preset
 # format, length or language until there is a reason to want one. The name is
