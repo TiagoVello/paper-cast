@@ -359,7 +359,12 @@ def download_name(source: dict[str, Any]) -> str:
     run again (CONTEXT.md), and two Sources of one Job that come out with the same
     name are the same paper under every name we have for them.
     """
-    fallback = Path(urllib.parse.urlsplit(pdf_url(source)).path).stem
+    # The last path segment without its `.pdf`, rather than `Path(...).stem`:
+    # the stem of "2401.12345" is "2401", so two untitled papers from the same
+    # month would both be filed as `2401.pdf` and the second would overwrite the
+    # first — one Job, two Sources, one paper actually discussed.
+    name = urllib.parse.urlsplit(pdf_url(source)).path.rsplit("/", 1)[-1]
+    fallback = name[:-4] if name.lower().endswith(".pdf") else name
     return pc.slugify(source.get("title") or "") or pc.slugify(fallback) or pc.FALLBACK_SLUG
 
 

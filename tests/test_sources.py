@@ -415,6 +415,15 @@ class RunDirectoryTest(SourcesTestCase):
         with mock.patch.object(sources.shutil, "which", return_value=None):
             self.assertEqual(sources.episode_directory(job, self.config).name, "attention-1-more")
 
+    def test_two_untitled_papers_from_one_month_are_not_filed_under_one_name(self):
+        # `2401.12345` and `2401.99999` share a `Path(...).stem` — "2401" — so a
+        # fallback built from the stem would file both of a combined Job's Sources
+        # as the same paper, the second overwriting the first, and the Episode
+        # would discuss one paper where the Job asked for two.
+        names = [sources.download_name(sources.arxiv_source(ident))
+                 for ident in ("2401.12345", "2401.99999")]
+        self.assertEqual(names, ["2401-12345", "2401-99999"])
+
     def test_a_plain_pdf_link_names_the_run_after_the_file_it_points_at(self):
         source = sources.resolve("https://example.com/papers/Attention_Final.pdf")
         job = self.job(source)
