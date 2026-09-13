@@ -311,28 +311,41 @@ def has_content(path: Path) -> bool:
     return path.is_file() and path.stat().st_size > 0
 
 
+def source_paths(sources: list[dict[str, Any]]) -> list[Path]:
+    """Every Source of a Job, as a local PDF path, in Job order.
+
+    One failure here fails the whole Job before any of them reach NotebookLM
+    (#13, #18): a combined Episode must never ship discussing fewer papers than
+    it was asked to, so this is resolved once, up front, rather than lazily as
+    the pipeline gets to each one.
+
+    `kind` is always "pdf" today, and its `path` is already a file on disk. #17
+    adds "arxiv", whose Source has to be downloaded before it is a Path — this
+    loop is the one, clearly-marked place that happens, so its
+    `materialise(source, run_dir)` call belongs on the line below.
+    """
+    paths = []
+    for source in sources:
+        # --- #17 lands its one-line `materialise(source, run_dir)` call here ---
+        if source.get("kind") != SOURCE_PDF or not source.get("path"):
+            raise PipelineError(f"this Job's Source is not a paper on disk: {source!r}")
+        paths.append(Path(source["path"]))
+    return paths
+
+
 def cast_job(job: dict[str, Any], note: Any, resume_from: str) -> None:
     """Drive the pipeline for one Job. The Job's Steering is the one that reaches the hosts."""
     sources = job.get("sources") or []
     if not sources:
         raise PipelineError("this Job has no Sources")
-    if len(sources) > 1:
-        # The Queue carries a combined Job today so that nothing downstream has to
-        # redesign this file; running one is #18.
-        raise PipelineError(
-            f"this Job has {len(sources)} Sources, and combining them into one "
-            "Episode is not built yet (#18)"
-        )
-    source = sources[0]
-    if source.get("kind") != SOURCE_PDF or not source.get("path"):
-        raise PipelineError(f"this Job's Source is not a paper on disk: {source!r}")
+    pdfs = source_paths(sources)
 
     # The Job's own Steering wins over the config's: it was snapshotted when the
     # Job was queued, and a preset flipped through since must not re-steer a Job
     # that is already waiting in line.
     config = pc.load_config(pc.CONFIG_FILE) | {"focus": job["steering"]}
     pc.run_pipeline(
-        Path(source["path"]),
+        pdfs,
         job["title"] or None,
         config,
         dry_run=False,
