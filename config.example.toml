@@ -5,7 +5,13 @@
 # value is a hard error naming the key, because a silently-ignored
 # `format = "deep-dive"` costs a five-minute generation cycle to discover.
 #
-# Flat keys, no sections. `~` is expanded.
+# Flat keys, then the Steering presets at the end: `[[presets]]` is a table
+# array and swallows every key written after it, so nothing flat may follow. `~`
+# is expanded.
+#
+# `paper-cast config set` rewrites this file whole — it is how the bar panel
+# writes, so the strict parser stays the only validator — and it writes TOML, not
+# your comments. Annotate a copy if the notes matter to you.
 #
 # Prerequisites live elsewhere, and are not repeated here so they cannot drift:
 #   - the YouTube credential: docs/youtube-oauth.md (and scripts/bootstrap_youtube.sh)
@@ -26,10 +32,17 @@ format = "deep_dive"
 # steer, not a contract — a "default" deep dive on a 5-page paper ran ~12 min.
 length = "default"
 
-# An optional steer for what the hosts concentrate on, e.g.
+# The Steering: what the hosts concentrate on and who they are talking to, e.g.
 #   focus = "the training objective and the ablations"
-# Empty means no steer, and the flag is not passed at all.
+# Empty means no Steering, and the flag is not passed at all. There is no length
+# limit — the 500-character cap on notebooklm.google.com is a `maxlength` on the
+# textarea, and a 1,313-character Steering was measured through to the episode.
 focus = ""
+
+# Which preset `focus` was loaded from, so the bar panel and the CLI agree on
+# which one is current. Empty means none of them is. A name that matches no
+# preset is an error, rather than a panel quietly showing the wrong one.
+steering_preset = ""
 
 # Where runs land: output_dir/<slug>/{cover.png, episode.m4a, episode.mp4}.
 # One directory per paper, silently overwritten when the same paper is re-run —
@@ -59,3 +72,29 @@ output_dir = "~/Videos/paper-cast"
 # on if you want to keep the file too.
 keep_artifacts = false
 keep_video = false
+
+# Steering presets: named, pre-written Steerings, flipped through on the panel's
+# carousel rather than retyped. Setup writes a starter set — ML researcher, Skim
+# it, Critical read, Teach me, Adjacent field — into your own config file rather
+# than paper-cast keeping a hidden fallback, because the whole point is that
+# editing one sticks. Delete them all if none of them is you; an empty list is a
+# valid config, it only leaves the carousel empty.
+#
+# A preset is a name and the Steering text, and nothing else: no per-preset
+# format, length or language until there is a reason to want one. The name is
+# what `steering_preset` refers to, so two presets may not share one, and an
+# entry with no name is an error rather than an unreachable preset.
+#
+# Text runs as long as you like, and `"""` holds the newlines and quotes:
+#
+#   [[presets]]
+#   name = "ML researcher"
+#   text = "Skip the background. The method, the ablations, and what the numbers do not show."
+#
+#   [[presets]]
+#   name = "Teach me"
+#   text = """Build it up from the problem.
+#   Define the terms as they arrive, and take an example all the way through."""
+#
+# These must be the last thing in the file: every key after a `[[presets]]` line
+# belongs to that preset, not to paper-cast.

@@ -39,7 +39,12 @@ DEFAULTS: dict[str, Any] = {
     "language": "en",
     "format": "deep_dive",
     "length": "default",
+    # The Steering, and the name of the preset it was loaded from. Loading a
+    # preset copies its text into `focus`; editing the text there is what the
+    # panel writes back into the preset (#11).
     "focus": "",
+    "steering_preset": "",
+    "presets": [],
     "output_dir": "~/Videos/paper-cast",
     "keep_artifacts": False,
     "keep_video": False,
@@ -62,6 +67,10 @@ FALLBACK_SLUG = "paper"
 FORMATS = ("deep_dive", "brief", "critique", "debate")
 LENGTHS = ("short", "default", "long")
 
+# A Steering preset is a name and the Steering text, and nothing else until there
+# is a reason (#11): no per-preset format, length or language.
+PRESET_FIELDS = ("name", "text")
+
 
 class ConfigError(Exception):
     """The config file on disk does not say something we can act on."""
@@ -81,6 +90,45 @@ def _check_type(key: str, value: Any, wanted: type) -> Any:
     if type(value) is not wanted:
         raise ConfigError(f"{key} must be {wanted.__name__}, not {type(value).__name__}")
     return value
+
+
+def parse_presets(raw: Any) -> list[dict[str, str]]:
+    """Validate `[[presets]]` as strictly as the flat keys, and name what is wrong.
+
+    A preset that quietly came out wrong is worse than a missing one: the panel
+    flips through these and sends whatever it finds, so a typo'd `txet` would
+    mean an Episode generated with no Steering at all.
+
+    There is no length check here on purpose (#11): the 500-character cap is a
+    `maxlength` on Google's own textarea, not a server rule — a 1,313-character
+    Steering round-tripped byte for byte through `nlm` — so a preset may run as
+    long as it likes.
+    """
+    _check_type("presets", raw, list)
+    presets: list[dict[str, str]] = []
+    for index, entry in enumerate(raw):
+        where = f"presets[{index}]"
+        _check_type(where, entry, dict)
+        unknown = sorted(set(entry) - set(PRESET_FIELDS))
+        if unknown:
+            raise ConfigError(
+                f"unknown key {', '.join(repr(key) for key in unknown)} in {where}; "
+                f"a Steering preset holds {', '.join(PRESET_FIELDS)}"
+            )
+        if "name" not in entry:
+            raise ConfigError(f"{where} has no name, so nothing can ask for it by name")
+        name = _check_type(f"{where}.name", entry["name"], str)
+        if not name:
+            raise ConfigError(f"{where}.name is empty, so nothing can ask for it by name")
+        if any(name == seen["name"] for seen in presets):
+            raise ConfigError(
+                f"{where}.name = {name!r} is already taken by an earlier preset; "
+                "steering_preset names one preset, so two cannot share a name"
+            )
+        # A preset with no text is a deliberate "no Steering", and legal. A typo'd
+        # key is caught above, so an absent `text` can only have been meant.
+        presets.append({"name": name, "text": _check_type(f"{where}.text", entry.get("text", ""), str)})
+    return presets
 
 
 def parse_config(text: str) -> dict[str, Any]:
@@ -103,7 +151,7 @@ def parse_config(text: str) -> dict[str, Any]:
         )
 
     config = dict(DEFAULTS) | raw
-    for key in ("language", "focus", "output_dir"):
+    for key in ("language", "focus", "steering_preset", "output_dir"):
         _check_type(key, config[key], str)
     _check_type("keep_artifacts", config["keep_artifacts"], bool)
     _check_type("keep_video", config["keep_video"], bool)
@@ -111,6 +159,15 @@ def parse_config(text: str) -> dict[str, Any]:
     _check_choice("length", _check_type("length", config["length"], str), LENGTHS)
     if not config["language"]:
         raise ConfigError("language must be a BCP-47 code such as 'en' or 'pt-BR', not empty")
+    config["presets"] = parse_presets(config["presets"])
+    names = [preset["name"] for preset in config["presets"]]
+    if config["steering_preset"] and config["steering_preset"] not in names:
+        # The panel and the CLI have to agree on which preset is loaded, and a
+        # name that matches nothing would leave them disagreeing in silence.
+        raise ConfigError(
+            f"steering_preset = {config['steering_preset']!r} names no preset; "
+            f"presets holds {', '.join(repr(name) for name in names) or 'none'}"
+        )
     config["output_dir"] = Path(config["output_dir"]).expanduser()
     return config
 

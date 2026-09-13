@@ -23,6 +23,8 @@ class ParseConfigTest(unittest.TestCase):
         self.assertEqual(config["format"], "deep_dive")
         self.assertEqual(config["length"], "default")
         self.assertEqual(config["focus"], "")
+        self.assertEqual(config["steering_preset"], "")
+        self.assertEqual(config["presets"], [])
         self.assertIs(config["keep_artifacts"], False)
         self.assertIs(config["keep_video"], False)
 
@@ -71,6 +73,105 @@ class ParseConfigTest(unittest.TestCase):
     def test_malformed_toml_is_a_config_error_not_a_traceback(self):
         with self.assertRaises(pc.ConfigError):
             pc.parse_config("language = ")
+
+
+TWO_PRESETS = '''\
+[[presets]]
+name = "ML researcher"
+text = "Skip the background."
+
+[[presets]]
+name = "Teach me"
+text = """Build it up from the problem.
+Define the terms as they arrive."""
+'''
+
+
+class SteeringPresetTest(unittest.TestCase):
+    """#11: the presets are validated as hard as the flat keys.
+
+    The panel sends whatever it finds here, so a preset that came out wrong is an
+    Episode generated with the wrong Steering — or with none.
+    """
+
+    def test_a_fresh_box_has_no_presets_and_nothing_loaded(self):
+        config = pc.parse_config("")
+        self.assertEqual(config["presets"], [])
+        self.assertEqual(config["steering_preset"], "")
+
+    def test_presets_come_back_as_name_and_text_in_file_order(self):
+        presets = pc.parse_config(TWO_PRESETS)["presets"]
+        self.assertEqual([preset["name"] for preset in presets], ["ML researcher", "Teach me"])
+        self.assertEqual(presets[0]["text"], "Skip the background.")
+
+    def test_a_multi_line_text_keeps_its_newlines(self):
+        presets = pc.parse_config(TWO_PRESETS)["presets"]
+        self.assertEqual(
+            presets[1]["text"], "Build it up from the problem.\nDefine the terms as they arrive."
+        )
+
+    def test_a_preset_with_no_text_is_a_preset_with_no_steering(self):
+        self.assertEqual(pc.parse_config('[[presets]]\nname = "Blank"')["presets"], [{"name": "Blank", "text": ""}])
+
+    def test_an_entry_without_a_name_fails_loudly(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config('[[presets]]\ntext = "Skip the background."')
+        self.assertIn("presets[0]", str(caught.exception))
+
+    def test_an_empty_name_is_rejected_because_nothing_could_ask_for_it(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config('[[presets]]\nname = ""')
+        self.assertIn("presets[0]", str(caught.exception))
+
+    def test_a_typo_inside_a_preset_names_the_entry_and_the_key(self):
+        # `txet` would otherwise be a preset that silently steers nothing.
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config('[[presets]]\nname = "ML researcher"\ntxet = "Skip the background."')
+        message = str(caught.exception)
+        self.assertIn("presets[0]", message)
+        self.assertIn("txet", message)
+
+    def test_a_name_of_the_wrong_type_is_rejected(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config("[[presets]]\nname = 7")
+        self.assertIn("presets[0].name", str(caught.exception))
+
+    def test_a_text_of_the_wrong_type_is_rejected(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config('[[presets]]\nname = "ML researcher"\ntext = true')
+        self.assertIn("presets[0].text", str(caught.exception))
+
+    def test_two_presets_may_not_share_a_name(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config('[[presets]]\nname = "Skim it"\n\n[[presets]]\nname = "Skim it"')
+        self.assertIn("Skim it", str(caught.exception))
+
+    def test_presets_written_as_something_other_than_a_list_is_rejected(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config('presets = "ML researcher"')
+        self.assertIn("presets", str(caught.exception))
+
+    def test_steering_preset_names_the_one_the_focus_came_from(self):
+        config = pc.parse_config(f'steering_preset = "Teach me"\n{TWO_PRESETS}')
+        self.assertEqual(config["steering_preset"], "Teach me")
+
+    def test_a_steering_preset_naming_no_preset_is_a_hard_error(self):
+        # The panel and the CLI have to agree on which preset is loaded.
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.parse_config(f'steering_preset = "ML reseacher"\n{TWO_PRESETS}')
+        message = str(caught.exception)
+        self.assertIn("steering_preset", message)
+        self.assertIn("ML reseacher", message)
+
+    def test_presets_with_none_of_them_loaded_is_a_valid_config(self):
+        self.assertEqual(pc.parse_config(TWO_PRESETS)["steering_preset"], "")
+
+    def test_a_steering_text_is_not_length_capped(self):
+        # #11: the 500-character limit is a maxlength on Google's textarea; a
+        # 1,313-character Steering was measured through to the episode.
+        long_text = "word " * 500
+        config = pc.parse_config(f'[[presets]]\nname = "Long"\ntext = "{long_text}"')
+        self.assertEqual(config["presets"][0]["text"], long_text)
 
 
 class SlugTest(unittest.TestCase):
