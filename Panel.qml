@@ -763,27 +763,11 @@ Item {
                 onClicked: if (!filePicker.running) filePicker.running = true
               }
 
-              Rectangle {
+              TextField {
+                id: arxivField
                 width: parent.width
-                height: arxivField.implicitHeight + Style.spacing.sm * 2
-                radius: Style.cornerRadius
-                color: "transparent"
-                border.width: 1
-                border.color: arxivField.activeFocus ? root.accent : root.faint
-
-                QC.TextField {
-                  id: arxivField
-                  anchors.fill: parent
-                  anchors.margins: Style.spacing.sm
-                  background: null
-                  selectByMouse: true
-                  placeholderText: "paste an arXiv link or id"
-                  placeholderTextColor: root.muted
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  color: root.fg
-                  onAccepted: { root.resolveArxiv(text); }
-                }
+                placeholderText: "paste an arXiv link or id"
+                onAccepted: { root.resolveArxiv(text); }
               }
 
               Text {
