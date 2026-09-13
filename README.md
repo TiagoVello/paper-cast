@@ -12,6 +12,8 @@ The point of it is the **Steering**: the instruction the hosts get before they
 read. It is what stops them explaining what a transformer is to someone who has
 implemented three.
 
+And it's free. Well... until google decides to charge for NotebookLM. Enjoy until then :)
+
 ## Add the plugin
 
 ```bash
