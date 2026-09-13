@@ -17,6 +17,10 @@ what it does, for when you would rather do it by hand or need to check its work.
 
 ## 1. Console (manual)
 
+No existing Google Cloud project is assumed, and no billing account is needed:
+the YouTube Data API's free quota covers this and the console never asks for a
+card. A first visit does ask you to accept the terms and pick a country.
+
 1. **Create a GCP project** at <https://console.cloud.google.com/projectcreate>.
    Note the project id — it goes in the answer on the ticket.
 2. **Enable the YouTube Data API v3**:
@@ -151,10 +155,15 @@ into the browser), token file permissions, the `videos.insert` body, and the
 resumable-upload offsets. Google itself is only exercised by the manual
 bootstrap above.
 
-## Wiring the wizard into `install.sh`
+## How Setup runs it
 
-`scripts/bootstrap_youtube.sh` was written to be run by hand. It is close to
-install-ready, but a later integration should know these before wrapping it.
+`paper-cast setup` is the integration (#12). Step 3 of the wizard checks whether
+`client_secret.json` and `youtube_token.json` are both on disk and, if they are
+not, hands the terminal to `bash scripts/bootstrap_youtube.sh` after warning what
+it is about to cost. Once the credential exists the step is skipped entirely, so
+the ten stages below are a once-per-machine thing.
+
+What that integration had to know, and what was changed to make it work:
 
 **Run it as a subprocess, never `source` it.** It sets `set -euo pipefail` and
 calls `exit 1` on its give-up paths (no project id, no client secret found,
@@ -175,23 +184,29 @@ the credential, not a limitation of this script.
 picks up where it stopped. If the installer wants to branch on *why* it stopped,
 give the give-up paths distinct exit codes first.
 
-**Stage 9 is not idempotent.** It uploads a real video to the user's channel
-every run, against a 100/day `videos.insert` budget. An installer that may run
-repeatedly should offer to skip it, and use the cheap health check instead:
+**Stage 9 uploads a real video**, against a 100/day `videos.insert` budget. It
+now remembers that it has: a re-run that already has a `TEST_VIDEO_ID` in
+`bootstrap.env` offers to skip the upload and runs the cheap health check
+instead, which is what makes the stage safe to reach twice.
 
 ```bash
 python3 scripts/youtube_auth.py refresh   # exit 0 == the credential still works
 ```
 
-**Stage 4 offers `git push`.** It assumes a writable checkout with a remote,
-which a plugin installed read-only will not have. Make that stage skip cleanly
-when `git rev-parse` fails, there is no `origin`, or there is nothing to push.
+**Stage 4's `git push` offer is guarded.** Only the repo's own author can push
+it, and a plugin checkout is a clone of somebody else's repo — so the offer
+appears only when there is an `origin`, an upstream branch, and something to
+push. Everyone else falls through to paper-cast's own published `PRIVACY.md`,
+which is the right URL for a consent screen to carry anyway: the policy
+describes what the program does with your data, and it is the same program.
 
 **Requirements**: `python3`, `ffmpeg`, `curl`, GNU `stat` (`-c`), `awk`, `sed`,
-`mktemp`. Optional: `git` (URL derivation and the push offer), `wl-copy`
-(clipboard; silently prints the value instead on X11 or over SSH), and
-`xdg-open`/`wslview`/`open` (the wizard warns and prints the URL if none exist).
-Check these up front rather than failing at stage 7.
+`mktemp` — checked in a preflight before stage 1 now, rather than failing at
+stage 9 after a quarter of an hour of console work. Optional: `git` (URL
+derivation and the push offer), `wl-copy` (clipboard; silently prints the value
+instead on X11 or over SSH), and `xdg-open`/`wslview`/`open` (the wizard warns
+and prints the URL if none exist). `paper-cast setup` installs the required ones
+in its step 1, which is why step 3 comes after it.
 
 **It writes only to `~/.config/paper-cast/` and `$TMPDIR`** — never into the
 repo. `ENV_FILE` is assigned inside the script, so exporting it from an
