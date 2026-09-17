@@ -38,12 +38,40 @@ class Finished:
         self.stdout = stdout
 
 
-def which_map(present):
-    """A `shutil.which` that knows about exactly these programs."""
-    return lambda program: f"/usr/bin/{program}" if program in present else None
+def which_map(present, **where):
+    """A `shutil.which` that knows about exactly these programs.
+
+    `where` gives one of them a path of its own — `which_map(ALL, nlm=...)` — for
+    the tests that care *which* nlm a shell would find, not just that it finds
+    one.
+    """
+    return lambda program: where.get(program) or (
+        f"/usr/bin/{program}" if program in present else None
+    )
 
 
 ALL_PROGRAMS = ("ffmpeg", "pdfinfo", "pdftoppm", "uv", "inotifywait", "nlm")
+
+
+def lock_requirements(lock=None):
+    """`{"package==version": ["--hash=sha256:...", ...]}` read out of the lock.
+
+    Deliberately a parser and not a `uv pip compile --check`: the question these
+    tests ask is what the file in the checkout says, and answering it must not
+    need uv, a network or an index that agrees with us today.
+    """
+    requirements, current = {}, None
+    for line in (lock or sc.NLM_LOCK).read_text().splitlines():
+        stripped = line.strip().removesuffix("\\").strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if line[:1].isalnum():
+            # `name==version` alone, or with an environment marker after `;`.
+            current = stripped.split(";")[0].strip()
+            requirements[current] = []
+        elif stripped.startswith("--hash=") and current:
+            requirements[current].append(stripped)
+    return requirements
 
 
 def quietly(call, *args, **kwargs):
@@ -134,17 +162,179 @@ class PrerequisiteTest(unittest.TestCase):
         # --noconfirm only for a caller that has already said yes to everything.
         self.assertIn("--noconfirm", sc.pacman_command(["poppler"], assume_yes=True))
 
-    def test_nlm_comes_from_uv_and_not_from_pip_or_pacman(self):
-        self.assertEqual(
-            sc.uv_tool_install_command(), ["uv", "tool", "install", "notebooklm-mcp-cli"]
-        )
+    def test_nlm_is_installed_from_the_checked_in_lock_and_never_from_the_index(self):
+        # The whole point of the pin: `uv tool install notebooklm-mcp-cli` would
+        # run whatever the index is serving on the day somebody sets their
+        # machine up, which is code no review here has seen.
+        commands = sc.nlm_install_commands()
+        self.assertEqual([command[:2] for command in commands], [["uv", "venv"], ["uv", "pip"]])
+        self.assertNotIn(["uv", "tool"], [command[:2] for command in commands])
+        install = commands[-1]
+        self.assertIn("--require-hashes", install)
+        self.assertEqual(install[-2:], ["-r", str(sc.NLM_LOCK)])
+        # A CPython fetched by uv would be one more unbound thing arriving over
+        # the network, and it is the lock's floor that decides the version.
+        self.assertIn("--no-managed-python", commands[0])
+        self.assertIn(">=3.11", commands[0])
+
+    def test_the_lock_pins_the_version_the_pin_names(self):
+        self.assertTrue(sc.NLM_LOCK.is_file(), f"{sc.NLM_LOCK} is not in the checkout")
+        self.assertIn(f"{sc.NLM_PACKAGE}=={sc.NLM_VERSION}", lock_requirements())
+
+    def test_every_requirement_in_the_lock_is_pinned_and_hashed(self):
+        requirements = lock_requirements()
+        self.assertGreater(len(requirements), 1, "a lock with only the package pins nothing")
+        for requirement, hashes in requirements.items():
+            self.assertIn("==", requirement, f"{requirement} is not pinned to one version")
+            self.assertTrue(hashes, f"{requirement} carries no hash")
+            for digest in hashes:
+                self.assertRegex(digest, r"^--hash=sha256:[0-9a-f]{64}$")
+
+    def test_the_pinned_nlm_is_the_one_in_the_environment_or_the_step_is_not_done(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = Path(directory)
+            packages = env / "lib" / "python3.13" / "site-packages"
+            packages.mkdir(parents=True)
+            self.assertFalse(sc.nlm_installed(env, sc.NLM_VERSION), "an empty environment")
+            # What an older pin, or the unpinned `uv tool install`, leaves behind.
+            (packages / f"{sc.NLM_DIST}-0.0.1.dist-info").mkdir()
+            self.assertFalse(sc.nlm_installed(env, sc.NLM_VERSION), "some other version")
+            (packages / f"{sc.NLM_DIST}-{sc.NLM_VERSION}.dist-info").mkdir()
+            self.assertTrue(sc.nlm_installed(env, sc.NLM_VERSION))
+
+    def test_only_a_link_into_the_pinned_environment_counts_as_nlm_on_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target, foreign = root / "pinned-nlm", root / "someone-elses-nlm"
+            target.touch()
+            foreign.touch()
+            link = root / "nlm"
+            self.assertFalse(sc.nlm_is_linked(link, target), "nothing on the path at all")
+            link.symlink_to(foreign)
+            self.assertFalse(sc.nlm_is_linked(link, target), "an nlm from uv tool install")
+            link.unlink()
+            link.symlink_to(target)
+            self.assertTrue(sc.nlm_is_linked(link, target))
+
+    def test_linking_nlm_makes_the_directory_the_link_goes_in_and_no_other(self):
+        # Not BIN_DIR: a helper handed a path has to act on that path, or a test
+        # passing it a temporary one still makes a directory in the real home.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "pinned-nlm"
+            target.touch()
+            link = root / "not" / "yet" / "bin" / "nlm"
+            with mock.patch.object(sc, "BIN_DIR", root / "never-touched"):
+                sc.link_nlm(link, target)
+            self.assertTrue(link.is_symlink())
+            self.assertFalse((root / "never-touched").exists())
+
+    def test_linking_nlm_replaces_the_path_and_never_writes_through_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target, foreign = root / "pinned-nlm", root / "someone-elses-nlm"
+            target.write_text("pinned")
+            foreign.write_text("theirs")
+            link = root / "nlm"
+            link.symlink_to(foreign)
+            sc.link_nlm(link, target)
+            self.assertEqual(Path(os.readlink(link)), target)
+            self.assertEqual(foreign.read_text(), "theirs", "wrote down somebody else's symlink")
 
     def test_the_step_is_satisfied_and_silent_when_everything_is_installed(self):
-        with mock.patch.object(sc.shutil, "which", which_map(ALL_PROGRAMS)), mock.patch.object(
+        with mock.patch.object(
+            sc.shutil, "which", which_map(ALL_PROGRAMS, nlm=str(sc.NLM_BIN))
+        ), mock.patch.object(
+            sc, "nlm_installed", return_value=True
+        ), mock.patch.object(sc, "nlm_is_linked", return_value=True), mock.patch.object(
             sc, "run_visible", side_effect=AssertionError("installed something anyway")
         ):
             status, _ = quietly(sc.step_prerequisites, sc.Prompt(assume_yes=True))
         self.assertEqual(status, sc.SATISFIED)
+
+    def test_an_unpinned_nlm_already_on_path_is_replaced_by_the_pinned_one(self):
+        # A machine set up before the pin has an `nlm` from `uv tool install`.
+        # Finding one is not the same as being done: what a Job runs has to be
+        # the build this commit names.
+        with mock.patch.object(
+            sc.shutil, "which", which_map(ALL_PROGRAMS, nlm=str(sc.NLM_BIN))
+        ), mock.patch.object(
+            sc, "nlm_installed", return_value=False
+        ), mock.patch.object(sc, "nlm_is_linked", return_value=False), mock.patch.object(
+            sc, "clear_to_replace_nlm", return_value=True
+        ), mock.patch.object(sc, "link_nlm") as linked, mock.patch.object(
+            sc, "run_visible", return_value=0
+        ) as ran:
+            status, _ = quietly(sc.step_prerequisites, sc.Prompt(assume_yes=True))
+        self.assertEqual(status, sc.DONE)
+        self.assertEqual([call.args[0] for call in ran.call_args_list], sc.nlm_install_commands())
+        linked.assert_called_once()
+
+    def test_an_nlm_earlier_on_path_is_what_would_really_run_so_the_step_is_not_done(self):
+        # The pin is worth nothing if a Job reaches a different nlm: the pipeline
+        # spells the program `nlm` and takes whatever PATH finds first.
+        with mock.patch.object(
+            sc.shutil, "which", which_map(ALL_PROGRAMS, nlm="/usr/local/bin/nlm")
+        ), mock.patch.object(sc, "nlm_installed", return_value=True), mock.patch.object(
+            sc, "nlm_is_linked", return_value=True
+        ), mock.patch.object(
+            sc, "run_visible", side_effect=AssertionError("rebuilt an environment that was fine")
+        ):
+            status, _ = quietly(sc.step_prerequisites, sc.Prompt(assume_yes=True))
+        # Outstanding, and *not* reinstalled: 84 wheels would not change which
+        # nlm comes first on somebody's PATH.
+        self.assertEqual(status, sc.OUTSTANDING)
+
+    def test_the_shadowing_nlm_is_named_rather_than_hinted_at(self):
+        which = which_map(ALL_PROGRAMS, nlm="/usr/local/bin/nlm")
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+            status = sc.check_nlm_on_path(sc.DONE, which)
+        self.assertEqual(status, sc.OUTSTANDING)
+        self.assertIn("/usr/local/bin/nlm", errors.getvalue())
+
+    def test_the_nlm_on_path_is_compared_to_the_binary_and_not_to_the_link(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "pinned-nlm"
+            target.touch()
+            link = root / "nlm"
+            link.symlink_to(target)
+            self.assertTrue(sc.nlm_on_path_is_pinned(target, lambda program: str(link)))
+            self.assertFalse(sc.nlm_on_path_is_pinned(target, lambda program: "/usr/bin/nlm"))
+            self.assertFalse(sc.nlm_on_path_is_pinned(target, lambda program: None))
+
+    def test_moving_the_pin_forward_does_not_ask_to_replace_our_own_link(self):
+        # A `[y/N]` question about a file setup wrote would talk a user out of
+        # their own upgrade.
+        prompt = sc.Prompt(assume_yes=False, interactive=True, gum=None)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target, foreign = root / "pinned-nlm", root / "someone-elses-nlm"
+            target.touch()
+            foreign.touch()
+            link = root / "nlm"
+            link.symlink_to(target)
+            with mock.patch.object(prompt, "confirm", side_effect=AssertionError("asked anyway")):
+                self.assertTrue(quietly(sc.clear_to_replace_nlm, prompt, link, target)[0])
+            # Somebody else's, though, is still a question.
+            link.unlink()
+            link.symlink_to(foreign)
+            with mock.patch.object(prompt, "confirm", return_value=False) as asked:
+                self.assertFalse(quietly(sc.clear_to_replace_nlm, prompt, link, target)[0])
+            asked.assert_called_once()
+
+    def test_declining_to_replace_a_foreign_nlm_leaves_the_step_outstanding(self):
+        prompt = sc.Prompt(assume_yes=False, interactive=True, gum=None)
+        with mock.patch.object(sc.shutil, "which", which_map(ALL_PROGRAMS)), mock.patch.object(
+            sc, "nlm_installed", return_value=False
+        ), mock.patch.object(sc, "nlm_is_linked", return_value=False), mock.patch.object(
+            sc, "clear_to_replace_nlm", return_value=False
+        ), mock.patch.object(
+            sc, "run_visible", side_effect=AssertionError("installed anyway")
+        ), mock.patch.object(prompt, "confirm", return_value=True):
+            status, _ = quietly(sc.step_prerequisites, prompt)
+        self.assertEqual(status, sc.OUTSTANDING)
 
     def test_a_just_installed_nlm_is_findable_for_the_rest_of_the_run(self):
         # uv puts it in ~/.local/bin, which this process's PATH may not hold, and
@@ -159,6 +349,8 @@ class PrerequisiteTest(unittest.TestCase):
     def test_declining_pacman_leaves_the_step_outstanding(self):
         prompt = sc.Prompt(assume_yes=False, interactive=True, gum=None)
         with mock.patch.object(sc.shutil, "which", which_map(("nlm",))), mock.patch.object(
+            sc, "nlm_installed", return_value=True
+        ), mock.patch.object(sc, "nlm_is_linked", return_value=True), mock.patch.object(
             sc, "run_visible", side_effect=AssertionError("installed anyway")
         ), mock.patch.object(prompt, "confirm", return_value=False):
             status, _ = quietly(sc.step_prerequisites, prompt)
@@ -462,6 +654,18 @@ class SecondRunTest(unittest.TestCase):
         self.token = self.tmp / "youtube_token.json"
         self.secret.write_text("{}")
         self.token.write_text("{}")
+        self.nlm_env = self.tmp / "nlm"
+        self.nlm_bin = self.nlm_env / "bin" / "nlm"
+        self.nlm_link = self.bin / "nlm"
+        # A machine that already has the pinned nlm, the way which_map below says
+        # it already has ffmpeg: this test is about the second run changing
+        # nothing, not about installing 80 wheels.
+        (self.nlm_env / "lib" / "python3.13" / "site-packages" /
+         f"{sc.NLM_DIST}-{sc.NLM_VERSION}.dist-info").mkdir(parents=True)
+        self.nlm_bin.parent.mkdir(parents=True)
+        self.nlm_bin.touch()
+        self.bin.mkdir(parents=True, exist_ok=True)
+        self.nlm_link.symlink_to(self.nlm_bin)
 
     @contextlib.contextmanager
     def machine(self, allow_actions):
@@ -476,7 +680,11 @@ class SecondRunTest(unittest.TestCase):
         ), mock.patch.object(cc, "CONFIG_FILE", self.config), mock.patch.object(
             sc, "CLIENT_SECRET", self.secret
         ), mock.patch.object(sc, "TOKEN_FILE", self.token), mock.patch.object(
-            sc.shutil, "which", which_map(ALL_PROGRAMS)
+            sc, "NLM_ENV", self.nlm_env
+        ), mock.patch.object(sc, "NLM_BIN", self.nlm_bin), mock.patch.object(
+            sc, "NLM_LINK", self.nlm_link
+        ), mock.patch.object(
+            sc.shutil, "which", which_map(ALL_PROGRAMS, nlm=str(self.nlm_link))
         ), mock.patch.object(sc, "run_quiet", return_value=Finished(0)), mock.patch.object(
             sc, "run_visible", visible
         ), mock.patch.dict(os.environ, {"PATH": str(self.bin)}):
@@ -582,9 +790,10 @@ class UninstallTest(unittest.TestCase):
         _, output = self.uninstall()
         self.assertIn(f"omarchy plugin remove {sc.PLUGIN_ID}", output)
 
-    def test_it_names_the_things_that_are_not_ours_to_take_away(self):
+    def test_it_names_the_things_it_leaves_and_where_the_pinned_nlm_is(self):
         _, output = self.uninstall()
-        self.assertIn("uv tool uninstall notebooklm-mcp-cli", output)
+        self.assertIn(f"notebooklm-mcp-cli {sc.NLM_VERSION}", output)
+        self.assertIn(str(sc.NLM_ENV), output)
         self.assertIn("YouTube channel", output)
 
     def test_a_foreign_paper_cast_on_path_is_left_alone(self):
