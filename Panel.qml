@@ -202,6 +202,12 @@ Item {
   property string combinedTitle: ""
   property string arxivError: ""
   property string queueError: ""
+  // What is sitting in the arXiv box, typed but not yet staged. Enter is a
+  // shortcut for staging it, not the only way in: Queue counts this as a
+  // Source and resolves it on the way, because pasting a link and pressing
+  // the button next to it is what people actually do.
+  readonly property string arxivPending: arxivField.text.trim()
+  property bool queueAfterResolve: false
   // Set by stagePaths() when a drop (#16) was refused for containing
   // something that isn't a PDF. Cleared when the panel closes (folded into
   // the single onOpenedChanged below — QML only allows one per property),
@@ -292,7 +298,16 @@ Item {
       if (code === 0) {
         arxivField.text = ""
         root.arxivError = ""
+        // Resolved because Queue was clicked with a reference still in the
+        // box: the Source is staged now, so queue what the click meant.
+        if (root.queueAfterResolve) {
+          root.queueAfterResolve = false
+          root.queueStaged()
+        }
       } else {
+        // A dead reference stops the Job here, with the reason in the box —
+        // the point of resolving before queuing at all.
+        root.queueAfterResolve = false
         root.arxivError = root.resolveStderr || "could not resolve that reference"
       }
     }
@@ -318,7 +333,15 @@ Item {
   // ---------------------------------------------------------------------
 
   function queueStaged() {
-    if (root.staged.length === 0 || queueAddProc.running) return
+    if (queueAddProc.running || resolveProc.running) return
+    // A reference typed and not yet staged is part of what the click meant:
+    // resolve it, and `onExited` comes back here with it staged.
+    if (root.arxivPending !== "") {
+      root.queueAfterResolve = true
+      root.resolveArxiv(root.arxivPending)
+      return
+    }
+    if (root.staged.length === 0) return
     var argv = ["paper-cast", "queue", "add"]
     for (var i = 0; i < root.staged.length; i++) {
       var source = root.staged[i]
@@ -858,9 +881,14 @@ Item {
               Button {
                 width: parent.width
                 bordered: true
-                enabled: root.staged.length > 0 && !queueAddProc.running
+                enabled: (root.staged.length > 0 || root.arxivPending !== "")
+                  && !queueAddProc.running && !resolveProc.running
                 foreground: enabled ? root.accent : root.muted
-                text: root.staged.length > 0 ? "Queue " + root.staged.length : "Queue"
+                text: {
+                  if (resolveProc.running) return "Resolving…"
+                  var count = root.staged.length + (root.arxivPending !== "" ? 1 : 0)
+                  return count > 0 ? "Queue " + count : "Queue"
+                }
                 onClicked: root.queueStaged()
               }
 
