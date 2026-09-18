@@ -51,12 +51,26 @@ outstanding, and names what.
 
 | | Step | Already done when |
 |---|---|---|
-| 1 | `ffmpeg`, `poppler`, `uv` and `inotify-tools` from pacman; `nlm` from `uv tool install notebooklm-mcp-cli` | each program is on `PATH` |
+| 1 | `ffmpeg`, `poppler`, `uv` and `inotify-tools` from pacman; `nlm` from `scripts/nlm-lock.txt` | each program is on `PATH`, and the `nlm` that `PATH` finds is the pinned one |
 | 2 | `nlm login`, once, in a visible browser | the stored NotebookLM session still refreshes |
 | 3 | The YouTube credential — a ten-stage walk through the Google Cloud console | `client_secret.json` and `youtube_token.json` are both on disk |
 | 4 | `~/.local/bin/paper-cast` | it is there and points at this checkout |
 | 5 | Five starter Steering presets in your config, and which one is loaded | `~/.config/paper-cast/config.toml` exists |
 | 6 | The bar widget | `omarchy plugin list` reports it enabled |
+
+`nlm` — the NotebookLM CLI, and the program a Job talks to Google through — is
+the one thing Setup installs rather than finds, so it is pinned rather than
+resolved. `scripts/nlm-lock.txt` is a checked-in lock naming
+`notebooklm-mcp-cli` and every dependency of it by exact version and sha256, and
+step 1 installs it with `uv pip install --require-hashes`: uv refuses any file
+whose hash the lock does not name. What runs on your machine is what this commit
+says, not whatever the package index is serving today, and moving the pin is a
+reviewable diff (`python3 scripts/relock_nlm.py`). It lives in
+`~/.local/share/paper-cast/nlm/`, linked as `~/.local/bin/nlm`; an `nlm` that an
+older Setup installed with `uv tool install` is replaced, with a prompt first.
+Step 1 then checks that the `nlm` your `PATH` actually finds is that one, and
+stays outstanding if something earlier on `PATH` would run instead — a pin only
+counts if the pinned build is the one a Job reaches.
 
 Of those, `inotify-tools` is the only one the pipeline never calls: it is how the
 bar widget watches for a Job changing stage, so a headless machine running
@@ -159,9 +173,10 @@ directory that is gone.
 what it is leaving: your config and the YouTube credential in
 `~/.config/paper-cast/`, the Queue's memory in `~/.local/state/paper-cast/`, and
 your Run directories. None of that comes back by re-running Setup, which is why
-none of it is deleted for you. `nlm`, `ffmpeg`, `poppler` and `inotify-tools`
-stay too — they are
-system packages other things use.
+none of it is deleted for you. `ffmpeg`, `poppler` and `inotify-tools` stay too —
+they are system packages other things use — and so does the pinned `nlm` in
+`~/.local/share/paper-cast/nlm/`, which `uninstall` names so you can delete it
+yourself.
 
 ## Requirements
 
@@ -170,8 +185,9 @@ with a YouTube channel, and a desktop session on the same machine — the consen
 flow opens a browser and catches the redirect on a loopback port, so there is no
 headless path to the credential. Setup installs everything else.
 
-The Python is standard library only: no virtualenv, no pip, nothing to keep
-up to date but the checkout.
+paper-cast's own Python is standard library only: no virtualenv, no pip, nothing
+to keep up to date but the checkout. The one environment Setup does build is
+`nlm`'s, and its contents are fixed by `scripts/nlm-lock.txt`.
 
 ## Development
 

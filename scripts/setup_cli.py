@@ -49,8 +49,8 @@ CHECKOUT = Path(__file__).resolve().parent.parent
 ENTRY_POINT = CHECKOUT / "scripts" / "paper_cast.py"
 BOOTSTRAP_YOUTUBE = CHECKOUT / "scripts" / "bootstrap_youtube.sh"
 
-# Where a user-installed command goes, and where `uv tool install` puts one too,
-# so step 1 and step 4 land in the same place and one PATH warning covers both.
+# Where a user-installed command goes, and where step 1 links `nlm` too, so both
+# commands land in the same place and one PATH warning covers both.
 BIN_DIR = Path.home() / ".local" / "bin"
 WRAPPER = BIN_DIR / "paper-cast"
 
@@ -79,9 +79,34 @@ PACMAN_PACKAGES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("inotify-tools", ("inotifywait",)),
 )
 
-# `nlm` ships as a uv tool. Not pip, not pacman, not the AUR: `uv tool install`
-# is the only documented channel, and it puts the binary in ~/.local/bin.
+# `nlm` is the one foreign program Setup installs rather than finds: it is not in
+# the Arch repos or the AUR, it ships as a Python package, and a Job talks to
+# Google entirely through it. So what gets installed is bound twice — a version
+# here, and `scripts/nlm-lock.txt`, a hashed lock covering the whole dependency
+# closure. `uv tool install notebooklm-mcp-cli` was the old spelling of this step
+# and resolved whatever the index was serving on the day somebody ran it, so a
+# machine could end up running code no review of this repo has ever seen.
+#
+# To move the pin: edit NLM_VERSION, run `python3 scripts/relock_nlm.py`, and
+# read the diff. That is the point of checking the lock in — an upgrade is a
+# reviewable commit rather than something that happens on its own.
 NLM_PACKAGE = "notebooklm-mcp-cli"
+NLM_VERSION = "0.11.5"
+NLM_LOCK = CHECKOUT / "scripts" / "nlm-lock.txt"
+# What the installed package calls itself on disk: PEP 503 normalises the dashes
+# in a distribution name to underscores in its `.dist-info` directory.
+NLM_DIST = NLM_PACKAGE.replace("-", "_")
+
+# `uv tool install` would make the environment and the ~/.local/bin entry for us,
+# but it cannot check a hash — `--constraints` pins versions and then installs
+# whatever the index answers with, which was verified by hand before this was
+# written. `uv pip install --require-hashes` does check, so the environment is
+# ours to make and the link on PATH ours to write.
+NLM_ENV = (
+    Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "paper-cast" / "nlm"
+)
+NLM_BIN = NLM_ENV / "bin" / "nlm"
+NLM_LINK = BIN_DIR / "nlm"
 
 # What a step can report. "satisfied" and "done" both mean the machine is ready;
 # the distinction is only there so a second run can say which it was.
@@ -187,7 +212,7 @@ def run_visible(command: list[str]) -> int:
     """Run a foreign program with its output left on the terminal.
 
     Unlike the pipeline's `run_step`, nothing is captured: `pacman` asks
-    questions, `uv tool install` draws progress, and the user is sitting there.
+    questions, `uv pip install` draws progress, and the user is sitting there.
     """
     note(f"$ {shlex.join(command)}")
     return subprocess.run(command).returncode
@@ -216,16 +241,126 @@ def pacman_command(packages: list[str], assume_yes: bool = False) -> list[str]:
     return ["sudo", "pacman", "-S", "--needed", *(["--noconfirm"] if assume_yes else []), *packages]
 
 
-def uv_tool_install_command() -> list[str]:
-    return ["uv", "tool", "install", NLM_PACKAGE]
+def nlm_install_commands(env: Path = NLM_ENV, lock: Path = NLM_LOCK) -> list[list[str]]:
+    """Build the environment, then install exactly what the lock names into it.
+
+    `--require-hashes` is the line that matters: uv refuses any artifact whose
+    sha256 is not one the lock gives, for the package and for every dependency of
+    it, so the only `nlm` that can end up in `env` is the one this commit pins.
+
+    `--no-managed-python` keeps uv from downloading a CPython of its own, which
+    would be one more unbound thing arriving over the network, and `>=3.11` is
+    the package's own floor, refused before 80-odd wheels are fetched rather than
+    after. `--clear` is what makes a version bump land: the old environment is
+    replaced, not installed over.
+    """
+    python = env / "bin" / "python"
+    return [
+        ["uv", "venv", "--clear", "--no-managed-python", "--python", ">=3.11", str(env)],
+        ["uv", "pip", "install", "--python", str(python), "--require-hashes", "-r", str(lock)],
+    ]
+
+
+def nlm_installed(env: Path = NLM_ENV, version: str = NLM_VERSION) -> bool:
+    """Whether the pinned nlm — that version — is the one sitting in `env`.
+
+    Read off the `.dist-info` directory, which is the installed artifact's own
+    record of what it is. Not `nlm --version`, which asks PyPI what the latest
+    release is on its way to answering, and not a stamp file, which would only
+    say which version we last *meant* to install.
+    """
+    return any(env.glob(f"lib/python*/site-packages/{NLM_DIST}-{version}.dist-info"))
+
+
+def nlm_is_linked(link: Path = NLM_LINK, target: Path = NLM_BIN) -> bool:
+    """Whether the `nlm` on PATH is the pinned one and not somebody else's.
+
+    An `nlm` left by the old `uv tool install` is a link into uv's own tool
+    directory and reads as false here, which is how a machine set up before the
+    pin gets moved onto it.
+    """
+    return link.is_symlink() and Path(os.readlink(link)) == target
+
+
+def nlm_on_path_is_pinned(
+    target: Path = NLM_BIN, which: Callable[[str], str | None] = shutil.which
+) -> bool:
+    """Whether the `nlm` a shell would run right now is the pinned build.
+
+    `nlm_is_linked` answers a different question — whether the file we write is
+    ours — and answering only that one is how a pin can be complete and mean
+    nothing. The pipeline spells the program `nlm` and nothing else
+    (`paper_cast.REQUIRED_TOOLS`, and every `run_step` in it), so it gets
+    whichever `nlm` PATH finds first; an older one in a directory ahead of
+    ~/.local/bin is what would really talk to Google. Resolved, because the thing
+    to compare is the binary at the end of the link, not the link.
+    """
+    found = which("nlm")
+    return found is not None and Path(found).resolve() == target.resolve()
+
+
+def check_nlm_on_path(status: str, which: Callable[[str], str | None] = shutil.which) -> str:
+    """Say so, and refuse the step, when something else on PATH would run instead.
+
+    Unlike `check_bin_on_path`, this downgrades the step rather than warning and
+    passing: a Job that runs an `nlm` nobody pinned is the exact thing the lock
+    exists to prevent, and Setup cannot fix it by writing a file — the shadowing
+    program is somebody's, and PATH order is theirs to decide.
+    """
+    if nlm_on_path_is_pinned(NLM_BIN, which):
+        return status
+    found = which("nlm")
+    if found is None:
+        warn(f"nlm is still not on PATH, though the pinned build is in {NLM_ENV}.")
+        note(f"Put {NLM_LINK.parent} on your PATH and run setup again.")
+    else:
+        warn(f"{found} comes before {NLM_LINK} on your PATH, so that — not the")
+        warn(f"pinned {NLM_PACKAGE} {NLM_VERSION} — is what a Job would run.")
+        note(f"Remove it, or put {NLM_LINK.parent} ahead of it, and run setup again.")
+    return OUTSTANDING
+
+
+def link_nlm(link: Path = NLM_LINK, target: Path = NLM_BIN) -> None:
+    """Put the pinned `nlm` on PATH, replacing that path rather than following it."""
+    # The directory `link` is going in, not BIN_DIR: a function given a path has
+    # to act on that path, or a test that passes it a temporary one still makes
+    # a directory in the caller's home.
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if os.path.lexists(link):
+        link.unlink()
+    link.symlink_to(target)
+
+
+def clear_to_replace_nlm(prompt: Prompt, link: Path = NLM_LINK, target: Path = NLM_BIN) -> bool:
+    """Whether we may write our `nlm` over whatever is on that path already.
+
+    Our own link is not somebody's property to ask about: moving the pin forward
+    repoints it at the same place it already points, and asking "replace this
+    stranger?" about a file Setup wrote would talk a user out of their own
+    upgrade — a `[y/N]` default means the bump ends up declined by silence.
+    """
+    if not os.path.lexists(link) or nlm_is_linked(link, target):
+        return True
+    if link.is_symlink():
+        warn(f"{link} is a symlink to {os.readlink(link)}, not paper-cast's.")
+        warn("Replacing it replaces the link. What it points at is left alone —")
+        warn(f"an nlm from the old `uv tool install` goes with `uv tool uninstall {NLM_PACKAGE}`.")
+    else:
+        warn(f"{link} exists and was not written by paper-cast setup.")
+    return prompt.confirm(f"Replace {link} with the pinned nlm?")
 
 
 def step_prerequisites(prompt: Prompt) -> str:
     packages = missing_packages(shutil.which)
-    nlm_missing = shutil.which("nlm") is None
+    # Two questions, not one. Whether the pinned nlm is installed and linked is
+    # what this step can act on; whether it is the nlm PATH actually finds is a
+    # thing to report, and reinstalling would not change the answer — so a
+    # shadowed machine must not rebuild 84 wheels on every run.
+    nlm_missing = not (nlm_installed(NLM_ENV, NLM_VERSION) and nlm_is_linked(NLM_LINK, NLM_BIN))
     if not packages and not nlm_missing:
-        note("ffmpeg, poppler, uv, inotify-tools and nlm are all on PATH.")
-        return SATISFIED
+        note("ffmpeg, poppler, uv and inotify-tools are all on PATH, and")
+        note(f"{NLM_LINK} is the pinned {NLM_PACKAGE} {NLM_VERSION}.")
+        return check_nlm_on_path(SATISFIED, shutil.which)
 
     if packages:
         announce(
@@ -246,29 +381,48 @@ def step_prerequisites(prompt: Prompt) -> str:
         if shutil.which("uv") is None:
             warn("uv is not on PATH, so nlm cannot be installed.")
             return OUTSTANDING
+        if not NLM_LOCK.is_file():
+            raise SetupError(
+                f"{NLM_LOCK} is missing from the checkout, and nlm is only installed from it"
+            )
         announce(
             [
-                f"About to run `uv tool install {NLM_PACKAGE}`, which installs `nlm`",
-                f"into {BIN_DIR}. No sudo. That package is how the NotebookLM CLI is",
-                "distributed — it is on neither PyPI-as-nlm nor in the Arch repos.",
+                f"About to install {NLM_PACKAGE} {NLM_VERSION} — the NotebookLM CLI,",
+                "which is what a Job actually talks to Google through. It goes into",
+                f"{NLM_ENV},",
+                f"and is linked as {NLM_LINK}. No sudo.",
+                "",
+                f"Every file is checked against {NLM_LOCK.name} in this checkout, which",
+                "pins that version and its whole dependency closure by sha256. Nothing",
+                "outside the lock is installed, so the checkout you are running is",
+                "what decides this, not whatever the index is serving today.",
             ]
         )
-        if not prompt.confirm(f"Install nlm with `uv tool install {NLM_PACKAGE}`?"):
+        if not prompt.confirm(f"Install the pinned {NLM_PACKAGE} {NLM_VERSION}?"):
             warn("skipped: nlm. It is the program that talks to NotebookLM.")
             return OUTSTANDING
-        if run_visible(uv_tool_install_command()) != 0:
-            raise SetupError(f"`uv tool install {NLM_PACKAGE}` failed; see its output above")
+        if not clear_to_replace_nlm(prompt, NLM_LINK, NLM_BIN):
+            warn(f"skipped: nlm. {NLM_LINK} was left as it is.")
+            return OUTSTANDING
+        for command in nlm_install_commands(NLM_ENV, NLM_LOCK):
+            if run_visible(command) != 0:
+                raise SetupError(
+                    f"installing {NLM_PACKAGE} {NLM_VERSION} failed; see the output above. "
+                    "A hash mismatch there means the index served something the lock does not name."
+                )
+        link_nlm(NLM_LINK, NLM_BIN)
+        note(f"Linked {NLM_LINK} → {NLM_BIN}")
         ensure_bin_on_path()
-    return DONE
+    return check_nlm_on_path(DONE, shutil.which)
 
 
 def ensure_bin_on_path() -> None:
     """Make a just-installed `nlm` findable for the rest of this run.
 
-    `uv tool install` puts it in ~/.local/bin, and a shell that started before
-    that directory was on PATH does not gain it by us writing a file there — so
-    step 2 would report the `nlm` step 1 had just installed as missing. This
-    fixes only this process; step 4 is what tells the user to fix their shell.
+    Step 1 links it into ~/.local/bin, and a shell that started before that
+    directory was on PATH does not gain it by us writing a file there — so step 2
+    would report the `nlm` step 1 had just installed as missing. This fixes only
+    this process; step 4 is what tells the user to fix their shell.
     """
     if not on_path(BIN_DIR):
         os.environ["PATH"] = f"{BIN_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
@@ -681,9 +835,12 @@ def uninstall_command(args: argparse.Namespace) -> int:
     else:
         say("Nothing of yours is on this machine to leave behind.")
     say()
-    say("Also untouched, because they are not paper-cast's to take away:")
-    note(f"  nlm         — `uv tool uninstall {NLM_PACKAGE}`, and it holds your")
-    note("                NotebookLM session")
+    say("Also left alone:")
+    note(f"  nlm         — setup installed {NLM_PACKAGE} {NLM_VERSION} into")
+    note(f"                {NLM_ENV}")
+    note(f"                and linked it as {NLM_LINK}. Deleting both removes it;")
+    note("                the NotebookLM session nlm keeps is in your home")
+    note("                directory, not in there, and outlives either.")
     note("  ffmpeg, poppler, uv, inotify-tools — system packages other things use")
     note("  the notebooks in NotebookLM, and the Episodes on your YouTube channel")
 
